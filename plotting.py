@@ -31,16 +31,22 @@ WINDOW_BAND_ZORDER = 1.1
 WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
 WINDOW_UP_COLOR = GLOBAL_UP_COLOR
 WINDOW_DOWN_COLOR = GLOBAL_DOWN_COLOR
-# 窗口绿波带使用不同方向的条纹，避免只靠颜色区分。
-WINDOW_UP_HATCH = r"////"
-WINDOW_DOWN_HATCH = r"\\\\"
-WINDOW_BAND_LINEWIDTH = 0.25
+# 主绿波带使用不同方向的条纹，避免只靠颜色区分。
+# 注意：这里的上下行方向与之前的窗口带方向相反。
+GLOBAL_UP_HATCH = r"\\\\"
+GLOBAL_DOWN_HATCH = r"////"
+BAND_HATCH_LINEWIDTH = 0.25
+
+
+def _band_facecolor(color: str, alpha: float) -> tuple[float, float, float, float]:
+    """带子面颜色：保留指定透明度，但让 hatch 边线保持不透明。"""
+    r, g, b, _ = to_rgba(color)
+    return (r, g, b, alpha)
 
 
 def _window_facecolor(color: str) -> tuple[float, float, float, float]:
-    """窗口带面颜色：保留低透明度，但让 hatch 边线保持不透明。"""
-    r, g, b, _ = to_rgba(color)
-    return (r, g, b, WINDOW_BAND_ALPHA)
+    """窗口带面颜色：低透明度纯填充，不使用 hatch。"""
+    return _band_facecolor(color, WINDOW_BAND_ALPHA)
 
 
 def _positions(arterial: Arterial) -> list[float]:
@@ -215,24 +221,30 @@ def plot_time_space(arterial: Arterial,
         Patch(facecolor="darkorange", alpha=1.0, label="Red (Down)"),
     ]
     if up_style == "global":
-        handles.append(Patch(facecolor=GLOBAL_UP_COLOR, alpha=GLOBAL_BAND_ALPHA,
-                             label="Up Band"))
+        handles.append(Patch(
+            facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
+            edgecolor=GLOBAL_UP_COLOR,
+            hatch=GLOBAL_UP_HATCH,
+            linewidth=BAND_HATCH_LINEWIDTH,
+            label="Up Band",
+        ))
     if down_style == "global":
-        handles.append(Patch(facecolor=GLOBAL_DOWN_COLOR, alpha=GLOBAL_BAND_ALPHA,
-                             label="Down Band"))
+        handles.append(Patch(
+            facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
+            edgecolor=GLOBAL_DOWN_COLOR,
+            hatch=GLOBAL_DOWN_HATCH,
+            linewidth=BAND_HATCH_LINEWIDTH,
+            label="Down Band",
+        ))
     if has_window_bands:
         handles.append(Patch(
             facecolor=_window_facecolor(WINDOW_UP_COLOR),
-            edgecolor=WINDOW_UP_COLOR,
-            hatch=WINDOW_UP_HATCH,
-            linewidth=WINDOW_BAND_LINEWIDTH,
+            edgecolor="none",
             label="Window Bands (Up)",
         ))
         handles.append(Patch(
             facecolor=_window_facecolor(WINDOW_DOWN_COLOR),
-            edgecolor=WINDOW_DOWN_COLOR,
-            hatch=WINDOW_DOWN_HATCH,
-            linewidth=WINDOW_BAND_LINEWIDTH,
+            edgecolor="none",
             label="Window Bands (Down)",
         ))
     ax.legend(handles=handles, loc="lower right", fontsize=9)
@@ -274,17 +286,25 @@ def plot_time_space(arterial: Arterial,
                 bu = solution.bandwidth_up.get(seg.name, 0.0)
                 bd = solution.bandwidth_down.get(seg.name, 0.0)
                 if up_style == "global" and bu > 0:
-                    ax.add_patch(_quad(pos[i], pos[i + 1],
-                                       tU[i] + shift, tU[i + 1] + shift, bu,
-                                       facecolor=GLOBAL_UP_COLOR,
-                                       alpha=GLOBAL_BAND_ALPHA,
-                                       zorder=GLOBAL_BAND_ZORDER))
+                    ax.add_patch(_quad(
+                        pos[i], pos[i + 1],
+                        tU[i] + shift, tU[i + 1] + shift, bu,
+                        facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
+                        edgecolor=GLOBAL_UP_COLOR,
+                        linewidth=BAND_HATCH_LINEWIDTH,
+                        hatch=GLOBAL_UP_HATCH,
+                        zorder=GLOBAL_BAND_ZORDER,
+                    ))
                 if down_style == "global" and bd > 0:
-                    ax.add_patch(_quad(pos[i], pos[i + 1],
-                                       tD[i] + shift, tD[i + 1] + shift, bd,
-                                       facecolor=GLOBAL_DOWN_COLOR,
-                                       alpha=GLOBAL_BAND_ALPHA,
-                                       zorder=GLOBAL_BAND_ZORDER))
+                    ax.add_patch(_quad(
+                        pos[i], pos[i + 1],
+                        tD[i] + shift, tD[i + 1] + shift, bd,
+                        facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
+                        edgecolor=GLOBAL_DOWN_COLOR,
+                        linewidth=BAND_HATCH_LINEWIDTH,
+                        hatch=GLOBAL_DOWN_HATCH,
+                        zorder=GLOBAL_BAND_ZORDER,
+                    ))
 
         # ============================================================
         # 图层 2：窗口绿波带（win2 两两路口、win3 三个一组……）
@@ -304,8 +324,6 @@ def plot_time_space(arterial: Arterial,
             for direction in ("up", "down"):
                 t_series = tU if direction == "up" else tD
                 color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
-                hatch = (WINDOW_UP_HATCH if direction == "up"
-                         else WINDOW_DOWN_HATCH)
                 for k in sorted(grouped[direction], reverse=True):
                     for j, bw in grouped[direction][k]:
                         ts = [t_series[j + i] for i in range(k)]
@@ -315,9 +333,7 @@ def plot_time_space(arterial: Arterial,
                             ax.add_patch(_poly_band(
                                 ps, t_shifted, bw,
                                 facecolor=_window_facecolor(color),
-                                edgecolor=color,
-                                linewidth=WINDOW_BAND_LINEWIDTH,
-                                hatch=hatch,
+                                edgecolor="none",
                                 zorder=WINDOW_BAND_ZORDER,
                             ))
 
@@ -361,7 +377,8 @@ def _quad(x0: float, x1: float, t0: float, t1: float, b: float,
     """单个路段的带子四边形（x=时间, y=距离；带宽 b 为时间方向宽度）。"""
     zorder = kw.pop("zorder", 3)
     verts = [(t0, x0), (t1, x1), (t1 + b, x1), (t0 + b, x0)]
-    return Polygon(verts, closed=True, edgecolor="none", zorder=zorder, **kw)
+    kw.setdefault("edgecolor", "none")
+    return Polygon(verts, closed=True, zorder=zorder, **kw)
 
 
 def _poly_band(pos: list[float], t: list[float], b: float, **kw) -> Polygon:
