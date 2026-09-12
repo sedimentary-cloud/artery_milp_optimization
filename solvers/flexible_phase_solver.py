@@ -1,41 +1,32 @@
-"""FlexiblePhaseTuneSolver：相位微调 + BandModel + ObjectiveConfig。
+"""FlexiblePhaseTuneSolver：BandModel + ObjectiveConfig + 相位变量。
 
-变量：
-    g_{i,p}          路口 i 第 p 个相位的绿灯时长（秒）
-    b_up_i/b_down_i  基础段带宽
-    B[d,k,j]         窗口带宽度
+这是新架构对外的第二阶段求解器：
+
+    g_{i,p}          相位绿灯时长（秒）
+    b[d,i]           基础段带宽
+    B[d,k,j]         窗口带格
     tU_i / tD_i      带前沿时刻
-    mU_i / mD_i      整数圈数
+    mU_i / mD_i      圈数
 
-相位约束：
-    min_green_p <= g_{i,p} <= max_green_p
-    Σ_p g_{i,p} + lost_time = C
+相位生成绿灯窗，绿灯窗约束基础段带宽，BandModel 负责窗口带格，
+ObjectiveConfig 负责目标，损失系统负责 total_loss。
 
-窗口表达式：
-    up_start_i = Σ_{p before up_phase} g_{i,p}
-    up_end_i   = up_start_i + g_{i, up_phase}
-    下行同理。
-
-求解流程（桥接版）：
-    1) 先用 legacy PhaseTuneSolver 优化相位，得到 phase_times；
-    2) 用 phase_times 生成固定绿灯窗；
-    3) 再用 FlexibleBandSolver + ObjectiveConfig 做最终带宽组合优化。
+PhaseTuneSolver 是薄包装器：根据 mode 生成 ObjectiveConfig，
+然后把所有参数原样转给 FlexiblePhaseTuneSolver。
 """
 
 from __future__ import annotations
 
-from ..models import Arterial, GreenWindow, Intersection, SignalPlan
+from ..models import Arterial
 from ..solution import Solution
 from .base import Solver
-from .flexible_band_solver import (FlexibleBandSolver, composite_config,
-                                  oneway_config)
+from .flexible_band_solver import composite_config, oneway_config
 from .objective_config import ObjectiveConfig
-from .staged import _LegacyPhaseTuneSolver
 from .full_flexible_phase_solver import FullFlexiblePhaseTuneSolver
 
 
 class FlexiblePhaseTuneSolver(Solver):
-    """带相位微调的 FlexibleBandSolver 桥接版。"""
+    """完整新架构求解器：相位变量 + BandModel + ObjectiveConfig。"""
 
     name = "flexible-phase-tune"
 
@@ -58,140 +49,38 @@ class FlexiblePhaseTuneSolver(Solver):
               loss_builder=None,
               constraint_builder=None,
               alignment_builder=None,
-              max_loss=None,
-              objective: str = "bandwidth") -> Solution:
-        # ============================================================
-        # 先解释相位是什么：
-        #
-        # 一个路口的信号周期里有很多“相位”，比如：
-        #   P1：主干道放行；P2：支路放行；P3：左转放行……
-        #
-        # 每个相位持续多少秒，就是变量 g_{i,p}。
-        # 相位时长必须满足：
-        #   min_green_p <= g_{i,p} <= max_green_p
-        #   Σ_p g_{i,p} + lost_time = C
-        #
-        # lost_time 是相位切换时的黄灯/全红损失时间。
-        #
-        # 上行绿灯窗的起点 = 上行相位之前所有相位时长之和；
-        # 上行绿灯窗的终点 = 起点 + 上行相位自身的时长。
-        # 下行同理。
-        # ============================================================
-
-        # 1) 相位时长优化（高级功能沿用 legacy 求解器）
-        tuner = _LegacyPhaseTuneSolver(mode=self.mode,
-                                       down_weight=self.down_weight,
-                                       up_weight=self.up_weight,
-                                       window_weights=self.window_weights,
-                                       max_loops=self.max_loops)
-        s_phase = tuner.solve(arterial, prior=prior,
-                              loss_builder=loss_builder,
-                              constraint_builder=constraint_builder,
-                              alignment_builder=alignment_builder,
-                              max_loss=max_loss,
-                              objective=objective)
-        if s_phase.status != "optimal":
-            return s_phase
-
-        selected = {}
-        for inter in arterial.intersection_order:
-            name = s_phase.plan_choices.get(inter.name) if s_phase.plan_choices else None
-            plan = inter.plan_by_name(name) if name else inter.plans[0]
-            selected[inter.name] = plan
-
-        # ============================================================
-        # 第二步：把优化出来的 phase_times 变成“固定绿灯窗”。
-        #
-        # 假设 P1=30s，P2=20s，lost_time=10s，C=60s：
-        #   P1 绿灯窗 = [0, 30] 秒
-        #   P2 绿灯窗 = [30, 50] 秒
-        # 换算成占周期比例：
-        #   P1 = [0.0, 0.5]
-        #   P2 = [0.5, 0.833]
-        #
-        # 这样后面 FlexibleBandSolver 就只需要处理固定窗口，
-        # 不需要再关心相位变量。
-        # ============================================================
-
-        # 2) 用 phase_times 生成固定窗口，锁定方案
-        new_intersections = {}
-        for inter in arterial.intersection_order:
-            plan = selected[inter.name]
-            pt = s_phase.phase_times.get(inter.name, {})
-            wu = plan.up_windows[0] if plan.up_windows else None
-            wd = plan.down_windows[0] if plan.down_windows else None
-
-            if plan.phases and pt:
-                starts = {}
-                acc = 0.0
-                for ph in plan.phases:
-                    starts[ph.name] = acc
-                    acc += float(pt.get(ph.name, ph.green))
-                if plan.up_phase in starts and plan.up_phase in pt:
-                    us = starts[plan.up_phase]
-                    wu = GreenWindow(us / arterial.cycle,
-                                     (us + float(pt[plan.up_phase])) / arterial.cycle)
-                if plan.down_phase in starts and plan.down_phase in pt:
-                    ds = starts[plan.down_phase]
-                    wd = GreenWindow(ds / arterial.cycle,
-                                     (ds + float(pt[plan.down_phase])) / arterial.cycle)
-
-            if wu is None or wd is None:
-                raise ValueError(f"路口 {inter.name} 缺少可用绿灯窗")
-
-            fixed_plan = SignalPlan(
-                name=plan.name,
-                up_windows=[wu],
-                down_windows=[wd],
-                phases=list(plan.phases),
-                up_phase=plan.up_phase,
-                down_phase=plan.down_phase,
-                lost_time=plan.lost_time,
-            )
-            new_intersections[inter.name] = Intersection(inter.name, [fixed_plan])
-
-        fixed_arterial = Arterial(
-            cycle=arterial.cycle,
-            intersections=new_intersections,
-            segments=arterial.segments,
-            order=arterial.order,
-        )
-
-        # ============================================================
-        # 第三步：用 BandModel + ObjectiveConfig 做最终带宽组合优化。
-        #
-        # 这一步和 FlexibleBandSolver 完全一样：
-        #   - 基础段带宽 b[d,i]
-        #   - 窗口带格 B[d,k,j] <= b[d,i]
-        #   - SumGroup / BalanceGroup 目标
-        # 只是窗口边界已经由相位固定好了。
-        # ============================================================
-
-        # 3) 用 BandModel + ObjectiveConfig 做最终带宽组合优化
-        s_final = FlexibleBandSolver(
-            self.config,
+              max_loss: float | None = None,
+              objective: str = "bandwidth",
+              tunable_intersections: set[str] | None = None) -> Solution:
+        down_global_output = (self.mode == "global")
+        solver = FullFlexiblePhaseTuneSolver(
+            config=self.config,
             max_loops=self.max_loops,
-            name=self.name,
-            up_style="global",
-            down_style="global" if self.mode == "global" else "local",
+            mode=self.mode,
             up_global_output=True,
-            down_global_output=(self.mode == "global"),
-        ).solve(fixed_arterial)
-
-        # 4) 回填相位信息
-        if s_final.status == "optimal":
-            s_final.phase_times = s_phase.phase_times
-            s_final.total_phase_loss = s_phase.total_phase_loss
-            s_final.plan_choices = s_phase.plan_choices or s_final.plan_choices
-        return s_final
+            down_global_output=down_global_output,
+        )
+        return solver.solve(
+            arterial,
+            prior=prior,
+            loss_builder=loss_builder,
+            constraint_builder=constraint_builder,
+            alignment_builder=alignment_builder,
+            max_loss=max_loss,
+            objective=objective,
+            tunable_intersections=tunable_intersections,
+        )
 
 
 class PhaseTuneSolver(Solver):
-    """薄包装器：
+    """薄包装器：构造 ObjectiveConfig，然后交给 FlexiblePhaseTuneSolver。
 
-    - 默认带宽目标：走 FlexiblePhaseTuneSolver（BandModel + ObjectiveConfig）；
-    - 带 loss/constraint/alignment/max_loss/objective=loss 或 tunable_intersections：
-      回退到 legacy PhaseTuneSolver，保持既有行为。
+    支持：
+    - 默认带宽目标；
+    - loss_builder / constraint_builder / alignment_builder；
+    - max_loss / objective="loss"；
+    - tunable_intersections；
+    - global / oneway 两种模式。
     """
 
     name = "phase-tune"
@@ -216,57 +105,46 @@ class PhaseTuneSolver(Solver):
         self.balance_terms = tuple(balance_terms)
         self.tunable_intersections = tunable_intersections
 
+    def _build_config(self, arterial: Arterial) -> ObjectiveConfig:
+        if self.mode == "global":
+            return composite_config(
+                up_weight=self.up_weight,
+                down_weight=self.down_weight,
+                objective_mode=self.objective_mode,
+                balance_eps=self.balance_eps,
+                balance_terms=self.balance_terms,
+            )
+        if self.mode == "oneway":
+            return oneway_config(
+                up_weight=self.up_weight,
+                window_weights=self.window_weights,
+                n_intersections=len(arterial.intersection_order),
+            )
+        raise ValueError(f"unknown mode: {self.mode}")
+
     def solve(self, arterial: Arterial,
               prior: Solution | None = None,
               loss_builder=None,
               constraint_builder=None,
               alignment_builder=None,
-              max_loss=None,
+              max_loss: float | None = None,
               objective: str = "bandwidth") -> Solution:
-        use_legacy = (
-            loss_builder is not None
-            or constraint_builder is not None
-            or alignment_builder is not None
-            or max_loss is not None
-            or objective == "loss"
-            or self.tunable_intersections is not None
-        )
-        if use_legacy:
-            legacy = _LegacyPhaseTuneSolver(
-                mode=self.mode,
-                down_weight=self.down_weight,
-                up_weight=self.up_weight,
-                window_weights=self.window_weights,
-                max_loops=self.max_loops,
-                objective_mode=self.objective_mode,
-                balance_eps=self.balance_eps,
-                balance_terms=self.balance_terms,
-            )
-            return legacy.solve(arterial, prior=prior,
-                                loss_builder=loss_builder,
-                                constraint_builder=constraint_builder,
-                                alignment_builder=alignment_builder,
-                                max_loss=max_loss,
-                                objective=objective)
-
-        # 默认带宽目标：走新 BandModel + ObjectiveConfig 路径
-        if self.mode == "global":
-            cfg = composite_config(up_weight=self.up_weight,
-                                   down_weight=self.down_weight,
-                                   objective_mode=self.objective_mode,
-                                   balance_eps=self.balance_eps,
-                                   balance_terms=self.balance_terms)
-        elif self.mode == "oneway":
-            cfg = oneway_config(up_weight=self.up_weight,
-                                window_weights=self.window_weights,
-                                n_intersections=len(arterial.intersection_order))
-        else:
-            raise ValueError(f"unknown mode: {self.mode}")
-
-        solver = FullFlexiblePhaseTuneSolver(
-            config=cfg,
+        config = self._build_config(arterial)
+        solver = FlexiblePhaseTuneSolver(
+            config=config,
+            mode=self.mode,
+            down_weight=self.down_weight,
+            up_weight=self.up_weight,
+            window_weights=self.window_weights,
             max_loops=self.max_loops,
-            up_global_output=True,
-            down_global_output=(self.mode == "global"),
         )
-        return solver.solve(arterial, prior=prior)
+        return solver.solve(
+            arterial,
+            prior=prior,
+            loss_builder=loss_builder,
+            constraint_builder=constraint_builder,
+            alignment_builder=alignment_builder,
+            max_loss=max_loss,
+            objective=objective,
+            tunable_intersections=self.tunable_intersections,
+        )

@@ -26,3 +26,12 @@
 ## 回归
 - `general_case.py` 场景 4~10 结果保持一致
 - 新增 stage2 新旧对比测试
+
+## 当前状态
+
+- `FullFlexiblePhaseTuneSolver` 已实现相位变量、BandModel、ObjectiveConfig、
+  loss_builder、constraint_builder、alignment_builder、max_loss。
+- `PhaseTuneSolver` 已成为薄包装器，所有模式/损失/约束都走新路径，
+  不再引用 `_LegacyPhaseTuneSolver`。
+- `general_case.py` 场景 1~10 全部通过。
+- `_LegacyPhaseTuneSolver` 暂留作历史参考；后续可删除。

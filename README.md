@@ -259,13 +259,17 @@ FlexibleBandSolver(
 
 ### 6.4 PhaseTuneSolver
 
-默认带宽目标走 `FlexiblePhaseTuneSolver`：
+完整走 `FlexiblePhaseTuneSolver`：
 
 ```text
-相位优化 -> 固定窗口 -> BandModel + ObjectiveConfig
+相位变量 g -> 绿灯窗
+绿灯窗 + t + b -> 基础段带宽
+b -> BandModel 窗口带格 B
+total_loss / ObjectiveConfig -> 目标
 ```
 
-带损失/约束/对齐时自动回退 legacy 逻辑，保证稳定。
+损失、硬/软约束、对齐损失、`max_loss` 和 `tunable_intersections`
+都直接进入同一个新模型，不再回退 legacy。
 
 ### 6.5 EpsilonConstraintRunner
 

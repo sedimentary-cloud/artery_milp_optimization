@@ -1,10 +1,10 @@
 """两阶段求解与 ε-约束帕累托扫描。
 
 当前结构：
-    PhaseTuneSolver        薄包装器：
-                           默认带宽目标走 FlexiblePhaseTuneSolver；
-                           带 loss/constraint/alignment 时回退 legacy。
-    _LegacyPhaseTuneSolver 旧相位优化实现，保留高级损失/约束行为。
+    PhaseTuneSolver        薄包装器：构造 ObjectiveConfig，
+                           所有目标/损失/约束都走 FlexiblePhaseTuneSolver。
+    _LegacyPhaseTuneSolver 旧相位优化实现，仅保留作历史参考，
+                           PhaseTuneSolver 不再引用它。
     TwoStageSolver         编排器：Stage1 选方案，Stage2 调相位。
     EpsilonConstraintRunner ε-约束扫描：max 主目标 s.t. total_loss <= eps。
 
