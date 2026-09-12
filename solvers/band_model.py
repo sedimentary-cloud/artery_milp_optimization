@@ -188,14 +188,22 @@ def _selected_green_windows(solution, arterial):
         if pt and plan.phases:
             from .phase import direction_phase_name, phase_start_times
             starts = phase_start_times(plan, pt)
-            try:
-                up_name = direction_phase_name(plan, "up")
-            except (ValueError, NotImplementedError):
-                up_name = plan.up_phase
-            try:
-                down_name = direction_phase_name(plan, "down")
-            except (ValueError, NotImplementedError):
-                down_name = plan.down_phase
+            wc = (solution.window_choices.get(inter.name)
+                  if solution and solution.window_choices else None)
+            if wc and wc.get("up_phase"):
+                up_name = wc["up_phase"]
+            else:
+                try:
+                    up_name = direction_phase_name(plan, "up")
+                except (ValueError, NotImplementedError):
+                    up_name = plan.up_phase
+            if wc and wc.get("down_phase"):
+                down_name = wc["down_phase"]
+            else:
+                try:
+                    down_name = direction_phase_name(plan, "down")
+                except (ValueError, NotImplementedError):
+                    down_name = plan.down_phase
             if up_name in starts and up_name in pt:
                 us = starts[up_name]
                 ue = us + float(pt[up_name])

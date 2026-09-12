@@ -164,14 +164,22 @@ def plot_time_space(arterial: Arterial,
                 and plan.phases):
             pt = solution.phase_times[inter.name]
             starts = phase_start_times(plan, pt)
-            try:
-                up_name = direction_phase_name(plan, "up")
-            except (ValueError, NotImplementedError):
-                up_name = plan.up_phase
-            try:
-                down_name = direction_phase_name(plan, "down")
-            except (ValueError, NotImplementedError):
-                down_name = plan.down_phase
+            wc = (solution.window_choices.get(inter.name)
+                  if solution.window_choices else None)
+            if wc and wc.get("up_phase"):
+                up_name = wc["up_phase"]
+            else:
+                try:
+                    up_name = direction_phase_name(plan, "up")
+                except (ValueError, NotImplementedError):
+                    up_name = plan.up_phase
+            if wc and wc.get("down_phase"):
+                down_name = wc["down_phase"]
+            else:
+                try:
+                    down_name = direction_phase_name(plan, "down")
+                except (ValueError, NotImplementedError):
+                    down_name = plan.down_phase
             if up_name in starts and up_name in pt:
                 us = starts[up_name]
                 win_up = GreenWindow(us / C, (us + float(pt[up_name])) / C)
@@ -209,14 +217,22 @@ def plot_time_space(arterial: Arterial,
         #   - 横坐标放在每个周期灯条的中心；
         #   - 沿时间轴每个周期重复，铺满整张时空图；
         #   - 垂直位置分别贴近上行/下行灯条。
-        try:
-            label_up_phase = direction_phase_name(plan, "up")
-        except (ValueError, NotImplementedError):
-            label_up_phase = plan.up_phase
-        try:
-            label_down_phase = direction_phase_name(plan, "down")
-        except (ValueError, NotImplementedError):
-            label_down_phase = plan.down_phase
+        wc = (solution.window_choices.get(inter.name)
+              if solution is not None and solution.window_choices else None)
+        if wc and wc.get("up_phase"):
+            label_up_phase = wc["up_phase"]
+        else:
+            try:
+                label_up_phase = direction_phase_name(plan, "up")
+            except (ValueError, NotImplementedError):
+                label_up_phase = plan.up_phase
+        if wc and wc.get("down_phase"):
+            label_down_phase = wc["down_phase"]
+        else:
+            try:
+                label_down_phase = direction_phase_name(plan, "down")
+            except (ValueError, NotImplementedError):
+                label_down_phase = plan.down_phase
 
         phase_labels = []
         if label_up_phase:

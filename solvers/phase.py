@@ -63,17 +63,44 @@ class LinearExpr:
 
 @dataclass
 class WindowExpr:
-    """一个方案的上/下行绿灯窗边界，用相位变量线性表示。
+    """一个方案的上/下行候选绿灯窗集合。
 
-    up_start / up_end / down_start / down_end 都是 LinearExpr：
+    每个候选窗口是 (start_expr, end_expr)，其中表达式为：
         const + Σ coefs[j] * g[j]
-    其中 j 是 plan.phases 的下标，g[j] 是第 j 个相位时长。
+
+    一个方向可能有多个候选窗口，例如多个相位都服务上行时，
+    每个服务相位对应一个候选窗口。
     """
-    up_start: LinearExpr
-    up_end: LinearExpr
-    down_start: LinearExpr
-    down_end: LinearExpr
-    phases: list  # 该方案的 phases 列表
+    up_windows: list[tuple[LinearExpr, LinearExpr]] = field(default_factory=list)
+    down_windows: list[tuple[LinearExpr, LinearExpr]] = field(default_factory=list)
+    phases: list = field(default_factory=list)  # 该方案的 phases 列表
+    up_phase_names: list[str | None] = field(default_factory=list)
+    down_phase_names: list[str | None] = field(default_factory=list)
+
+    @property
+    def up_start(self) -> LinearExpr:
+        """兼容单窗口访问。多窗口时请使用 up_windows。"""
+        if len(self.up_windows) != 1:
+            raise RuntimeError("WindowExpr 有多个上行窗口，请使用 up_windows")
+        return self.up_windows[0][0]
+
+    @property
+    def up_end(self) -> LinearExpr:
+        if len(self.up_windows) != 1:
+            raise RuntimeError("WindowExpr 有多个上行窗口，请使用 up_windows")
+        return self.up_windows[0][1]
+
+    @property
+    def down_start(self) -> LinearExpr:
+        if len(self.down_windows) != 1:
+            raise RuntimeError("WindowExpr 有多个下行窗口，请使用 down_windows")
+        return self.down_windows[0][0]
+
+    @property
+    def down_end(self) -> LinearExpr:
+        if len(self.down_windows) != 1:
+            raise RuntimeError("WindowExpr 有多个下行窗口，请使用 down_windows")
+        return self.down_windows[0][1]
 
 
 def _widest(windows):
@@ -83,37 +110,17 @@ def _widest(windows):
 
 
 def direction_phase_name(plan: SignalPlan, direction: str) -> str:
-    """解析某个方向最终绑定的相位名。
+    """兼容接口：当某方向只有一个服务相位时返回该相位名。
 
-    优先级：
-        1. 显式 up_phase / down_phase（兼容旧方案）；
-        2. Phase.serves 中声明的单一服务相位。
+    多窗口场景请使用 plan.direction_phase_names(direction)。
     """
-    if direction not in ("up", "down"):
-        raise ValueError(f"未知方向: {direction}")
-
-    explicit = plan.up_phase if direction == "up" else plan.down_phase
-    if explicit is not None:
-        names = {ph.name for ph in plan.phases}
-        if explicit not in names:
-            raise ValueError(
-                f"方案 {plan.name} 的 {direction}_phase={explicit!r} "
-                f"不在 phases 中"
-            )
-        return explicit
-
-    served = plan.serving_phase_names(direction)
-    if len(served) == 1:
-        return served[0]
-    if len(served) == 0:
-        raise ValueError(
-            f"方案 {plan.name} 无法解析 {direction} 方向相位；"
-            f"请设置 {direction}_phase 或给某个 Phase 加 serves"
+    names = plan.direction_phase_names(direction)
+    if len(names) != 1:
+        raise NotImplementedError(
+            f"方案 {plan.name} 的 {direction} 方向有多个服务相位: {names}；"
+            f"请使用 direction_phase_names() 或 window_exprs().{direction}_windows。"
         )
-    raise NotImplementedError(
-        f"方案 {plan.name} 的 {direction} 方向由多个相位服务: {served}；"
-        f"当前 window_exprs 只支持每个方向绑定单一服务相位。"
-    )
+    return names[0]
 
 
 def phase_start_times(plan: SignalPlan, phase_times: dict[str, float] | None = None) -> dict[str, float]:
@@ -136,11 +143,12 @@ def phase_start_times(plan: SignalPlan, phase_times: dict[str, float] | None = N
 
 
 def window_exprs(plan: SignalPlan, C: float) -> WindowExpr:
-    """把方案转为相位变量线性表达式。
+    """把方案转为多个候选绿灯窗的相位变量线性表达式。
 
-    - 若 plan.phases 非空：按 phases 顺序累计出方向绑定相位的绿灯起止时刻；
+    - 若 plan.phases 非空：每个服务该方向的相位产生一个候选窗口；
       相位间损失 phase_lost_times 作为常数项加入后续相位的起点。
-    - 若 plan.phases 为空：退回固定窗口（widest window），表达式退化为常数。
+    - 若 plan.phases 为空：plan.up_windows / down_windows 中每个固定窗口
+      都作为一个候选窗口，表达式退化为常数。
     """
     if plan.phases:
         idx = {ph.name: i for i, ph in enumerate(plan.phases)}
@@ -151,9 +159,6 @@ def window_exprs(plan: SignalPlan, C: float) -> WindowExpr:
                 raise ValueError(
                     f"方案 {plan.name} 的 phase_lost_times 含未知相位: {pname}"
                 )
-
-        up_name = direction_phase_name(plan, "up")
-        down_name = direction_phase_name(plan, "down")
 
         def start_expr(phase_name: str) -> LinearExpr:
             i = idx[phase_name]
@@ -170,22 +175,36 @@ def window_exprs(plan: SignalPlan, C: float) -> WindowExpr:
             coefs[i] = coefs.get(i, 0.0) + 1.0
             return LinearExpr(const=start.const, coefs=coefs)
 
+        up_names = plan.direction_phase_names("up")
+        down_names = plan.direction_phase_names("down")
+        up_windows = [(start_expr(name), end_expr(name)) for name in up_names]
+        down_windows = [(start_expr(name), end_expr(name)) for name in down_names]
+
         return WindowExpr(
-            up_start=start_expr(up_name),
-            up_end=end_expr(up_name),
-            down_start=start_expr(down_name),
-            down_end=end_expr(down_name),
+            up_windows=up_windows,
+            down_windows=down_windows,
             phases=list(plan.phases),
+            up_phase_names=list(up_names),
+            down_phase_names=list(down_names),
         )
 
-    win_up = _widest(plan.up_windows)
-    win_dn = _widest(plan.down_windows)
+    if not plan.up_windows or not plan.down_windows:
+        raise ValueError(f"方案 {plan.name} 缺少可用的固定绿灯窗口")
+
+    up_windows = [
+        (LinearExpr(w.start * C), LinearExpr(w.end * C))
+        for w in plan.up_windows
+    ]
+    down_windows = [
+        (LinearExpr(w.start * C), LinearExpr(w.end * C))
+        for w in plan.down_windows
+    ]
     return WindowExpr(
-        up_start=LinearExpr(win_up.start * C),
-        up_end=LinearExpr(win_up.end * C),
-        down_start=LinearExpr(win_dn.start * C),
-        down_end=LinearExpr(win_dn.end * C),
+        up_windows=up_windows,
+        down_windows=down_windows,
         phases=[],
+        up_phase_names=[None] * len(up_windows),
+        down_phase_names=[None] * len(down_windows),
     )
 
 

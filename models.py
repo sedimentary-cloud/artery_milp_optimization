@@ -99,6 +99,34 @@ class SignalPlan:
         """返回通过 serves 声明服务某方向的相位名列表。"""
         return [ph.name for ph in self.phases if direction in ph.serves]
 
+    def direction_phase_names(self, direction: str) -> list[str]:
+        """返回某个方向最终使用的相位名列表。
+
+        优先级：
+            1. 显式 up_phase / down_phase -> 单元素列表；
+            2. Phase.serves -> 所有服务该方向的相位。
+        """
+        if direction not in ("up", "down"):
+            raise ValueError(f"未知方向: {direction}")
+
+        explicit = self.up_phase if direction == "up" else self.down_phase
+        if explicit is not None:
+            names = {ph.name for ph in self.phases}
+            if explicit not in names:
+                raise ValueError(
+                    f"方案 {self.name} 的 {direction}_phase={explicit!r} "
+                    f"不在 phases 中"
+                )
+            return [explicit]
+
+        served = self.serving_phase_names(direction)
+        if not served:
+            raise ValueError(
+                f"方案 {self.name} 无法解析 {direction} 方向相位："
+                f"请设置 {direction}_phase 或给 Phase.serves 添加 {direction}"
+            )
+        return served
+
     def up_green_ratio(self) -> float:
         """上行总绿信比。"""
         return sum(w.width for w in self.up_windows)

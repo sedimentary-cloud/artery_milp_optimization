@@ -446,6 +446,21 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     cur += 1
                 resolved_constraints.append((spec, terms, slack, kind))
 
+        # ------------------------------------------------------------------
+        # 2.5) 方向窗口选择变量：
+        #      每个路口、每个方向可能有多个候选窗口（多个服务相位
+        #      或多个固定窗口）。用 0-1 变量选择其中一个。
+        # ------------------------------------------------------------------
+        idx_winU: list[list[int]] = []
+        idx_winD: list[list[int]] = []
+        for i in range(n):
+            n_up = len(exprs[i].up_windows)
+            n_dn = len(exprs[i].down_windows)
+            idx_winU.append(list(range(cur, cur + n_up)))
+            cur += n_up
+            idx_winD.append(list(range(cur, cur + n_dn)))
+            cur += n_dn
+
         nvar = cur
 
         # ------------------------------------------------------------------
@@ -541,12 +556,22 @@ class FullFlexiblePhaseTuneSolver(Solver):
         for _, _, slack, _ in resolved_constraints:
             if slack is not None:
                 ub[slack] = C
+        for i in range(n):
+            for var in idx_winU[i]:
+                ub[var] = 1.0
+            for var in idx_winD[i]:
+                ub[var] = 1.0
 
         # integrality=0 表示连续变量，=1 表示整数变量。
         # 只有 mU/mD 是整数，其余 g、t、b、B、slack 都是连续变量。
         integrality = np.zeros(nvar)
         integrality[idx_mU:idx_mU + m] = 1
         integrality[idx_mD:idx_mD + m] = 1
+        for i in range(n):
+            for var in idx_winU[i]:
+                integrality[var] = 1
+            for var in idx_winD[i]:
+                integrality[var] = 1
 
         # 下面开始逐行组装线性约束：
         #   rows[k] 是第 k 行的系数向量，
@@ -654,47 +679,75 @@ class FullFlexiblePhaseTuneSolver(Solver):
             add_row({idx_tD + i: 1, idx_tD + i + 1: -1, idx_mD + i: -C},
                     seg.travel_time_down, seg.travel_time_down)
 
-        # ------------------------- 绿灯窗约束 -------------------------
-        # 每个路口：
-        #   tU_i >= up_start_i
-        #   tD_i >= down_start_i
-        # 每个路段 i：
-        #   tU_i     + b_up_i <= up_end_i
-        #   tU_{i+1} + b_up_i <= up_end_{i+1}
-        #   tD_i     + b_down_i <= down_end_i
-        #   tD_{i+1} + b_down_i <= down_end_{i+1}
-        # 每个路口先加“带前沿不能早于窗口起点”的下界约束。
-        for i, expr in enumerate(exprs):
-            # tU_i >= up_start_i。
-            add_row(self._lower_phase_row(idx_tU + i, expr.up_start, idx_g[i]),
-                    expr.up_start.const, np.inf)
-            # tD_i >= down_start_i。
-            add_row(self._lower_phase_row(idx_tD + i, expr.down_start, idx_g[i]),
-                    expr.down_start.const, np.inf)
+        # ------------------------- 绿灯窗约束（多窗口选择） -------------------------
+        # 每个方向在路口 i 有多个候选窗口时，用 0-1 变量选一个：
+        #   δU[i,w] ∈ {0,1}
+        #   Σ_w δU[i,w] = 1
+        # 选中窗口的约束严格成立，未选窗口用 Big-M 放松。
+        BIG_M = 2.0 * C
 
-        # 每个路段 i 有 4 条“带子末端不超过绿灯窗终点”的约束：
-        # 上行在左端路口、上行在右端路口、下行在左端、下行在右端。
+        for i in range(n):
+            # 每个方向恰好选择一个候选窗口。
+            add_row({var: 1.0 for var in idx_winU[i]}, 1.0, 1.0)
+            add_row({var: 1.0 for var in idx_winD[i]}, 1.0, 1.0)
+
+            # 下界：t_i >= start_w(g) - M*(1-δ)
+            # 移项：t_i - start_w(g) - M*δ >= const - M
+            for w, (start_expr, _) in enumerate(exprs[i].up_windows):
+                row = {idx_tU + i: 1.0, idx_winU[i][w]: -BIG_M}
+                for j, coef in start_expr.coefs.items():
+                    row[idx_g[i][j]] = row.get(idx_g[i][j], 0.0) - coef
+                add_row(row, start_expr.const - BIG_M, np.inf)
+
+            for w, (start_expr, _) in enumerate(exprs[i].down_windows):
+                row = {idx_tD + i: 1.0, idx_winD[i][w]: -BIG_M}
+                for j, coef in start_expr.coefs.items():
+                    row[idx_g[i][j]] = row.get(idx_g[i][j], 0.0) - coef
+                add_row(row, start_expr.const - BIG_M, np.inf)
+
+        # 每个路段 i 两端各自选择一个窗口。
+        # 对于窗口对 (w0, w1)，若两端都选中，则末端约束成立：
+        #   t_left + b <= end_w0(g_left)
+        #   t_right + b <= end_w1(g_right)
+        # 未同时选中时用 M*(2-δ0-δ1) 放松。
         for i in range(m):
-            # expr0 是路段左端路口 i 的窗口表达式，
-            # expr1 是路段右端路口 i+1 的窗口表达式。
             expr0, expr1 = exprs[i], exprs[i + 1]
 
-            # tU_i + b_up_i <= up_end_i
-            add_row(self._upper_phase_row(idx_tU + i, idx_bU + i,
-                                          expr0.up_end, idx_g[i]),
-                    -np.inf, expr0.up_end.const)
-            # tU_{i+1} + b_up_i <= up_end_{i+1}
-            add_row(self._upper_phase_row(idx_tU + i + 1, idx_bU + i,
-                                          expr1.up_end, idx_g[i + 1]),
-                    -np.inf, expr1.up_end.const)
-            # tD_i + b_down_i <= down_end_i
-            add_row(self._upper_phase_row(idx_tD + i, idx_bD + i,
-                                          expr0.down_end, idx_g[i]),
-                    -np.inf, expr0.down_end.const)
-            # tD_{i+1} + b_down_i <= down_end_{i+1}
-            add_row(self._upper_phase_row(idx_tD + i + 1, idx_bD + i,
-                                          expr1.down_end, idx_g[i + 1]),
-                    -np.inf, expr1.down_end.const)
+            # 上行：左端每个窗口 × 右端每个窗口。
+            for w0, (_, end0) in enumerate(expr0.up_windows):
+                for w1, (_, end1) in enumerate(expr1.up_windows):
+                    d0 = idx_winU[i][w0]
+                    d1 = idx_winU[i + 1][w1]
+
+                    row = {idx_tU + i: 1.0, idx_bU + i: 1.0,
+                           d0: BIG_M, d1: BIG_M}
+                    for j, coef in end0.coefs.items():
+                        row[idx_g[i][j]] = row.get(idx_g[i][j], 0.0) - coef
+                    add_row(row, -np.inf, end0.const + 2.0 * BIG_M)
+
+                    row = {idx_tU + i + 1: 1.0, idx_bU + i: 1.0,
+                           d0: BIG_M, d1: BIG_M}
+                    for j, coef in end1.coefs.items():
+                        row[idx_g[i + 1][j]] = row.get(idx_g[i + 1][j], 0.0) - coef
+                    add_row(row, -np.inf, end1.const + 2.0 * BIG_M)
+
+            # 下行：左端每个窗口 × 右端每个窗口。
+            for w0, (_, end0) in enumerate(expr0.down_windows):
+                for w1, (_, end1) in enumerate(expr1.down_windows):
+                    d0 = idx_winD[i][w0]
+                    d1 = idx_winD[i + 1][w1]
+
+                    row = {idx_tD + i: 1.0, idx_bD + i: 1.0,
+                           d0: BIG_M, d1: BIG_M}
+                    for j, coef in end0.coefs.items():
+                        row[idx_g[i][j]] = row.get(idx_g[i][j], 0.0) - coef
+                    add_row(row, -np.inf, end0.const + 2.0 * BIG_M)
+
+                    row = {idx_tD + i + 1: 1.0, idx_bD + i: 1.0,
+                           d0: BIG_M, d1: BIG_M}
+                    for j, coef in end1.coefs.items():
+                        row[idx_g[i + 1][j]] = row.get(idx_g[i + 1][j], 0.0) - coef
+                    add_row(row, -np.inf, end1.const + 2.0 * BIG_M)
 
         # ------------------------- 窗口带格 -------------------------
         # 窗口带格：B[d,k,j] 不能超过它覆盖的任意一段基础带宽。
@@ -754,6 +807,21 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     ph.name: float(x[idx_g[i][p]])
                     for p, ph in enumerate(plan.phases)
                 }
+
+        # 记录第二阶段选中的候选窗口。
+        sol.window_choices = {}
+        for i in range(n):
+            up_w = max(range(len(idx_winU[i])),
+                       key=lambda w: x[idx_winU[i][w]])
+            dn_w = max(range(len(idx_winD[i])),
+                       key=lambda w: x[idx_winD[i][w]])
+            sol.window_choices[int_names[i]] = {
+                "plan": selected[i].name,
+                "up_window": int(up_w),
+                "down_window": int(dn_w),
+                "up_phase": exprs[i].up_phase_names[up_w],
+                "down_phase": exprs[i].down_phase_names[dn_w],
+            }
 
         # ------------------------- 结果提取 -------------------------
         # 上行带宽：

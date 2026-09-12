@@ -111,11 +111,13 @@ class _LegacyPhaseTuneSolver(Solver):
                 wu = max(plan.up_windows, key=lambda w: w.width)
                 wd = max(plan.down_windows, key=lambda w: w.width)
                 exprs.append(WindowExpr(
-                    up_start=LinearExpr(wu.start * C),
-                    up_end=LinearExpr(wu.end * C),
-                    down_start=LinearExpr(wd.start * C),
-                    down_end=LinearExpr(wd.end * C),
+                    up_windows=[(LinearExpr(wu.start * C),
+                                 LinearExpr(wu.end * C))],
+                    down_windows=[(LinearExpr(wd.start * C),
+                                   LinearExpr(wd.end * C))],
                     phases=[],
+                    up_phase_names=[None],
+                    down_phase_names=[None],
                 ))
 
         # ---------------- 变量布局 ----------------

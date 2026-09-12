@@ -60,30 +60,33 @@ def make_plan(name, phases, up_phase=None, down_phase=None, lost_time=0.0,
     def dur(p):
         return next(ph.green for ph in phases if ph.name == p)
 
-    def resolve_direction(direction, explicit):
+    def resolve_direction_names(direction, explicit):
         if explicit is not None:
-            return explicit
+            return [explicit]
         served = [ph.name for ph in phases if direction in ph.serves]
-        if len(served) == 1:
-            return served[0]
-        if len(served) == 0:
+        if not served:
             raise ValueError(
                 f"方案 {name} 无法解析 {direction} 方向相位；"
                 f"请提供 {direction}_phase 或设置 Phase.serves"
             )
-        raise NotImplementedError(
-            f"方案 {name} 的 {direction} 方向由多个相位服务: {served}；"
-            f"make_plan 目前只支持单一服务相位。"
-        )
+        return served
 
-    up_name = resolve_direction("up", up_phase)
-    down_name = resolve_direction("down", down_phase)
-    us = starts[up_name]
-    ds = starts[down_name]
+    up_names = resolve_direction_names("up", up_phase)
+    down_names = resolve_direction_names("down", down_phase)
+    up_windows = [
+        GreenWindow(starts[name_] / C,
+                    (starts[name_] + dur(name_)) / C)
+        for name_ in up_names
+    ]
+    down_windows = [
+        GreenWindow(starts[name_] / C,
+                    (starts[name_] + dur(name_)) / C)
+        for name_ in down_names
+    ]
     return SignalPlan(
         name=name,
-        up_windows=[GreenWindow(us / C, (us + dur(up_name)) / C)],
-        down_windows=[GreenWindow(ds / C, (ds + dur(down_name)) / C)],
+        up_windows=up_windows,
+        down_windows=down_windows,
         phases=phases,
         # 如果调用方显式给了 up_phase/down_phase，则保留；
         # 否则保留 None，让第二阶段通过 Phase.serves 解析方向绑定。
@@ -664,3 +667,59 @@ plot_time_space(
     ],
 )
 print("  时空图已保存到 case_5_2_phase_end_lost.png")
+
+
+print("=" * 70)
+print("5.3 多窗口选择：一个方向由多个相位服务")
+
+phases_5_3 = [
+    Phase("P1", 20.0, 5.0, 40.0, serves=("up",)),
+    Phase("P2", 30.0, 10.0, 50.0, serves=("up", "down")),
+    Phase("P3", 20.0, 5.0, 40.0, serves=("down",)),
+]
+plan_5_3 = make_plan(
+    "多窗口",
+    phases_5_3,
+    lost_time=20.0,  # 20 + 30 + 20 + 20 = 90
+)
+# 上行候选窗口：P1、P2
+# 下行候选窗口：P2、P3
+assert len(plan_5_3.up_windows) == 2
+assert len(plan_5_3.down_windows) == 2
+
+art_5_3 = Arterial(
+    cycle=C,
+    intersections={
+        n: Intersection(n, plans=[plan_5_3])
+        for n in ["Z1", "Z2", "Z3"]
+    },
+    segments={
+        "zs1": Segment("zs1", 180.0, 180.0, 12.0, 12.0),
+        "zs2": Segment("zs2", 180.0, 180.0, 12.0, 12.0),
+    },
+    order=["Z1", "zs1", "Z2", "zs2", "Z3"],
+)
+
+s_5_3_prior = CompositeBandSolver(down_weight=1.0).solve(art_5_3)
+s_5_3 = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
+    art_5_3,
+    prior=s_5_3_prior,
+)
+print(f"  status={s_5_3.status}, objective={s_5_3.objective:.2f}")
+print(f"  phase_times={s_5_3.phase_times}")
+print("  第二阶段选中的窗口：")
+for name_, choice in s_5_3.window_choices.items():
+    print(f"    {name_}: up_phase={choice.get('up_phase')}, "
+          f"down_phase={choice.get('down_phase')}, "
+          f"up_idx={choice.get('up_window')}, "
+          f"down_idx={choice.get('down_window')}")
+plot_time_space(
+    art_5_3,
+    s_5_3,
+    save_path="case_5_3_multi_window_choice.png",
+    notes=[
+        "Multiple serving phases per direction",
+        "0-1 window selection in stage 2",
+    ],
+)
+print("  时空图已保存到 case_5_3_multi_window_choice.png")

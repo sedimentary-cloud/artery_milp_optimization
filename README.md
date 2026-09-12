@@ -53,6 +53,8 @@ start, end ∈ [0, 1]
   - `serves`: 服务方向集合，例如 `("up", "down")`；
 - `up_phase` / `down_phase`: 显式上/下行绑定相位；
   未设置时可由 `Phase.serves` 自动解析；
+  若一个方向由多个相位服务，则 `window_exprs` 返回多个候选窗口，
+  `FullFlexiblePhaseTuneSolver` 用 0-1 变量为每个路口选择其中一个窗口；
 - `lost_time`: 周期尾部损失时间（秒）；
 - `phase_lost_times`: 相位间损失时间，形如 `{"P1": 5.0}`，
   表示 P1 绿灯结束后先损失 5 秒，再进入下一个相位。
