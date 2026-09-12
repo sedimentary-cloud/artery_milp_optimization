@@ -325,7 +325,7 @@ s_align = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
     arterial,
     prior=s_sum,
     alignment_builder=alignment_builder,
-    max_loss=0.0,          # 只要求对齐损失为 0，不做帕累托扫描
+    band_loss_weight=10.0,  # 绿波带层对齐损失以加权和进入 band_score
     objective="bandwidth",
 )
 
@@ -340,7 +340,7 @@ for n in names:
 plot_time_space(
     arterial, s_align,
     save_path="case_10_alignment_loss.png",
-    notes=["Alignment loss <= 0",
+    notes=["Alignment loss in band_score (weight=10)",
            "Band center is pulled toward arrival peak"],
 )
 print()

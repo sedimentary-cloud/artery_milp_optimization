@@ -166,6 +166,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
               constraint_builder: ConstraintBuilder | None = None,
               alignment_builder=None,
               max_loss: float | None = None,
+              max_intersection_loss: float | None = None,
+              band_loss_weight: float = 0.0,
               objective: str = "bandwidth",
               tunable_intersections: set[str] | None = None) -> Solution:
         """求解第二阶段相位/带宽 MILP。
@@ -174,11 +176,18 @@ class FullFlexiblePhaseTuneSolver(Solver):
             arterial: 干线数据。
             prior: Stage 1 的解，用 plan_choices 锁定每个路口的方案。
                 为 None 时取每个路口的第一个方案。
-            loss_builder: 相位 hinge 损失声明。
-            constraint_builder: 线性硬/软约束声明。
-            alignment_builder: 带边/带中心对齐损失声明。
-            max_loss: 总损失上界；不为 None 时增加 total_loss <= max_loss。
-            objective: "bandwidth" 或 "loss"。
+            loss_builder: 相位 hinge 损失声明，进入 intersection_loss。
+            constraint_builder: 线性硬/软约束声明；软约束进入
+                intersection_loss。
+            alignment_builder: 绿波带层对齐损失声明，进入 band_loss；
+                通过 band_loss_weight 以加权和形式进入 band_score。
+            max_loss: 兼容旧接口。等价于 max_intersection_loss。
+            max_intersection_loss: 交叉口损失上界，添加
+                intersection_loss <= max_intersection_loss。
+            band_loss_weight: band_loss 的权重 λ。
+                objective="bandwidth" 时目标为：
+                    max band_objective - λ * band_loss
+            objective: "bandwidth"/"band_score" 或 "loss"/"intersection_loss"。
             tunable_intersections: 允许调整相位的路口名集合；
                 None 表示全部可调。
 
@@ -386,40 +395,53 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     out.append(idx_g[i][p])
             return out
 
-        # 把显式硬/软约束和对齐损失转成的软约束合并到同一列表里。
-        # AlignmentLossBuilder.to_linear_specs 会把 |center-a|-tol 的 hinge
-        # 拆成两条软 LinearSpec，因此这里可以直接复用同一套解析逻辑。
-        combined_specs: list[LinearSpec] = []
-        if constraint_builder is not None:
-            combined_specs.extend(constraint_builder.specs)
+        # ============================================================
+        # 两类约束分开解析：
+        #   band_specs         -> 绿波带层 loss，进入 band_loss
+        #   intersection_specs -> 路口/相位层 loss，进入 intersection_loss
+        #
+        # AlignmentLossBuilder 本质是绿波带层损失；
+        # constraint_builder 里的软约束则视为交叉口/相位层损失。
+        # ============================================================
+        band_specs: list[LinearSpec] = []
         if alignment_builder is not None:
-            combined_specs.extend(
+            band_specs.extend(
                 alignment_builder.to_linear_specs(self.mode, int_names, seg_names)
             )
 
+        intersection_specs: list[LinearSpec] = []
+        if constraint_builder is not None:
+            intersection_specs.extend(constraint_builder.specs)
+
         # resolved_constraints 的每项是：
-        #   (原始 LinearSpec, [(MILP变量下标, 系数), ...], slack变量下标或None)
+        #   (原始 LinearSpec, [(MILP变量下标, 系数), ...], slack变量下标或None, kind)
+        # kind ∈ {"band", "intersection"}。
         # 解析失败、一个变量都没匹配到的约束会被跳过。
-        resolved_constraints: list[tuple[LinearSpec, list[tuple[int, float]], int | None]] = []
-        for spec in combined_specs:
-            terms: list[tuple[int, float]] = []
-            for name, coef in spec.terms.items():
-                # 先尝试特殊变量名：b_up / tU_* / bD_* / B_bal 等。
-                var = resolve_special(name)
-                if var is not None:
-                    terms.append((var, coef))
+        resolved_constraints: list[
+            tuple[LinearSpec, list[tuple[int, float]], int | None, str]
+        ] = []
+
+        for kind, specs in (("band", band_specs),
+                            ("intersection", intersection_specs)):
+            for spec in specs:
+                terms: list[tuple[int, float]] = []
+                for name, coef in spec.terms.items():
+                    # 先尝试特殊变量名：b_up / tU_* / bD_* / B_bal 等。
+                    var = resolve_special(name)
+                    if var is not None:
+                        terms.append((var, coef))
+                        continue
+                    # 再尝试相位名：I2.P1 或全局 P1。
+                    for pvar in resolve_phase(name):
+                        terms.append((pvar, coef))
+                if not terms:
                     continue
-                # 再尝试相位名：I2.P1 或全局 P1。
-                for pvar in resolve_phase(name):
-                    terms.append((pvar, coef))
-            if not terms:
-                continue
-            # 软约束需要一个非负 slack 变量，目标里会给它 penalty。
-            slack = None
-            if spec.soft:
-                slack = cur
-                cur += 1
-            resolved_constraints.append((spec, terms, slack))
+                # 软约束需要一个非负 slack 变量，目标里会给它 penalty。
+                slack = None
+                if spec.soft:
+                    slack = cur
+                    cur += 1
+                resolved_constraints.append((spec, terms, slack, kind))
 
         nvar = cur
 
@@ -428,25 +450,27 @@ class FullFlexiblePhaseTuneSolver(Solver):
         # ------------------------------------------------------------------
         # scipy.optimize.milp 默认求 min c^T x。
         # 我们的带宽目标是 max，所以带宽系数要写成 -weight。
+        effective_max_intersection = (
+            max_intersection_loss if max_intersection_loss is not None else max_loss
+        )
+
         c = np.zeros(nvar)
-        if objective == "loss":
-            # 目标 = min total_loss。
-            # 每个 hinge 变量的系数是它对应的 slope；
-            # 每个软约束 slack 的系数是 penalty。
+        if objective in ("loss", "intersection_loss"):
+            # 目标 = min intersection_loss。
+            # 只最小化相位 hinge 和交叉口软约束 slack；
+            # alignment 属于 band_loss，不进入这个目标。
             for _, _, var, spec, side in loss_vars:
                 slope = spec.slope if side == "lower" else (spec.upper_slope or spec.slope)
                 c[var] += slope
-            for spec, _, slack in resolved_constraints:
-                if spec.soft and slack is not None:
+            for spec, _, slack, kind in resolved_constraints:
+                if kind == "intersection" and spec.soft and slack is not None:
                     c[slack] += spec.penalty
         else:
-            # 主目标是 max bandwidth。
-            # SumGroup：直接对每个带变量加“负权重”。
+            # 目标 = max band_objective - band_loss_weight * band_loss。
+            # 先加入 ObjectiveConfig 的带宽收益。
             for group in self.config.sum_groups:
                 for key, weight in group.terms.items():
                     c[band_var(key)] += -weight
-            # BalanceGroup：B_group 的权重取负；
-            # 若 eps>0，再给每个成员加 weight*eps 的托底项。
             for gidx, group in enumerate(self.config.balance_groups):
                 gvar = balance_vars[gidx]
                 c[gvar] += -group.weight
@@ -454,16 +478,23 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     for member in group.members:
                         c[band_var(member)] += -group.weight * group.eps
 
-            # ε-约束扫描时，给损失一个极小的二次权重。
+            # 再把带层损失以加权和形式放进目标：
+            #   max ... - λ * band_loss
+            # milp 求 min，所以 band slack 的系数写成 +λ*penalty。
+            for spec, _, slack, kind in resolved_constraints:
+                if kind == "band" and spec.soft and slack is not None:
+                    c[slack] += band_loss_weight * spec.penalty
+
+            # ε-约束扫描时，给交叉口损失一个极小的二次权重。
             # 这不改变“带宽优先”的主目标，但能让同一带宽下的输出
-            # 尽量落在最小损失点，避免帕累托前沿出现被支配点。
-            if max_loss is not None:
+            # 尽量落在 intersection_loss 最小点。
+            if effective_max_intersection is not None:
                 tiny = 1e-7
                 for _, _, var, spec, side in loss_vars:
                     slope = spec.slope if side == "lower" else (spec.upper_slope or spec.slope)
                     c[var] += tiny * slope
-                for spec, _, slack in resolved_constraints:
-                    if spec.soft and slack is not None:
+                for spec, _, slack, kind in resolved_constraints:
+                    if kind == "intersection" and spec.soft and slack is not None:
                         c[slack] += tiny * spec.penalty
 
         # ------------------------------------------------------------------
@@ -504,7 +535,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
             ub[gvar] = C
         for _, _, var, _, _ in loss_vars:
             ub[var] = C
-        for _, _, slack in resolved_constraints:
+        for _, _, slack, _ in resolved_constraints:
             if slack is not None:
                 ub[slack] = C
 
@@ -569,7 +600,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
                         -spec.upper_threshold, np.inf)
 
         # ------------------------- 声明式约束 -------------------------
-        for spec, terms, slack in resolved_constraints:
+        for spec, terms, slack, kind in resolved_constraints:
             # terms 是 [(变量下标, 系数), ...]，转成 add_row 需要的字典。
             row_coefs = {var: coef for var, coef in terms}
             if not spec.soft:
@@ -594,18 +625,19 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 else:
                     raise ValueError("soft '=' constraint is not supported")
 
-        # ------------------------- max_loss 约束 -------------------------
-        if max_loss is not None:
-            # 构造 total_loss = Σ slope*ℓ + Σ penalty*slack，
-            # 然后添加约束 total_loss <= max_loss。
+        # ------------------------- max_intersection_loss 约束 -------------------------
+        if effective_max_intersection is not None:
+            # 构造 intersection_loss = Σ slope*ℓ + Σ penalty*slack，
+            # 然后添加约束 intersection_loss <= max_intersection_loss。
+            # alignment 属于 band_loss，不进入这个约束。
             loss_coefs: dict[int, float] = {}
             for _, _, var, spec, side in loss_vars:
                 slope = spec.slope if side == "lower" else (spec.upper_slope or spec.slope)
                 loss_coefs[var] = loss_coefs.get(var, 0.0) + slope
-            for spec, _, slack in resolved_constraints:
-                if spec.soft and slack is not None:
+            for spec, _, slack, kind in resolved_constraints:
+                if kind == "intersection" and spec.soft and slack is not None:
                     loss_coefs[slack] = loss_coefs.get(slack, 0.0) + spec.penalty
-            add_row(loss_coefs, -np.inf, max_loss)
+            add_row(loss_coefs, -np.inf, effective_max_intersection)
 
         # ------------------------- 带前沿传递 -------------------------
         for i, seg in enumerate(segs):
@@ -753,33 +785,59 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     x[band_offset + band_model.var_of(band)]
                 )
 
-        # ------------------------- 总损失回填 -------------------------
-        # 这里按定义重新计算 total_loss，而不是简单读目标函数值。
-        # 因为 objective="bandwidth" 时目标里没有损失项，
-        # 但 EpsilonConstraintRunner 仍然需要知道这次解的真实损失。
-        total_loss = 0.0
+        # ------------------------- 两类损失回填 -------------------------
+        # 1) 绿波带层损失：band_loss。
+        #    只统计 kind="band" 的软约束违反量，典型来源是 AlignmentLossBuilder。
+        band_loss = 0.0
+        # 2) 交叉口/相位层损失：intersection_loss。
+        #    包含相位 hinge loss 和 kind="intersection" 的软约束违反量。
+        intersection_loss = 0.0
 
-        # 1) 相位 hinge 损失。
+        # 相位 hinge 损失。
         for i, p, _, spec, side in loss_vars:
             g = float(x[idx_g[i][p]])
             if side == "lower":
-                total_loss += spec.slope * max(0.0, spec.threshold - g)
+                intersection_loss += spec.slope * max(0.0, spec.threshold - g)
             else:
-                total_loss += ((spec.upper_slope or spec.slope)
-                               * max(0.0, g - spec.upper_threshold))
+                intersection_loss += ((spec.upper_slope or spec.slope)
+                                      * max(0.0, g - spec.upper_threshold))
 
-        # 2) 软约束违反量 * penalty。
-        for spec, terms, _ in resolved_constraints:
+        # 软约束违反量 * penalty，按 kind 分别汇总。
+        for spec, terms, _, kind in resolved_constraints:
             if not spec.soft:
                 continue
-            # 计算约束左边表达式的实际值。
             expr_val = sum(coef * float(x[var]) for var, coef in terms)
             if spec.sense == ">=":
-                total_loss += spec.penalty * max(0.0, spec.rhs - expr_val)
+                violation = max(0.0, spec.rhs - expr_val)
             elif spec.sense == "<=":
-                total_loss += spec.penalty * max(0.0, expr_val - spec.rhs)
+                violation = max(0.0, expr_val - spec.rhs)
+            else:
+                violation = 0.0
+            weighted = spec.penalty * violation
+            if kind == "band":
+                band_loss += weighted
+            else:
+                intersection_loss += weighted
 
-        sol.total_phase_loss = float(total_loss)
+        # 原始绿波带收益 band_objective：
+        #   SumGroup: Σ weight * band_value
+        #   BalanceGroup: weight * B_group + weight*eps * Σ member_value
+        band_objective = 0.0
+        for group in self.config.sum_groups:
+            for key, weight in group.terms.items():
+                band_objective += weight * float(x[band_var(key)])
+        for gidx, group in enumerate(self.config.balance_groups):
+            band_objective += group.weight * float(x[balance_vars[gidx]])
+            if group.eps > 0:
+                for member in group.members:
+                    band_objective += group.weight * group.eps * float(x[band_var(member)])
+
+        sol.band_objective = float(band_objective)
+        sol.band_loss = float(band_loss)
+        sol.band_score = float(band_objective - band_loss_weight * band_loss)
+        sol.intersection_loss = float(intersection_loss)
+        sol.total_phase_loss = float(intersection_loss)
+
         # SciPy 的 success 不一定等价于“最优”状态字符串，这里沿用原策略：
         # success=True 写 optimal，否则把求解器消息写进 status。
         sol.status = "optimal" if res.success else res.message

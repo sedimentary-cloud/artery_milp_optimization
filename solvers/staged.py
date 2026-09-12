@@ -6,15 +6,20 @@
     _LegacyPhaseTuneSolver 旧相位优化实现，仅保留作历史参考，
                            PhaseTuneSolver 不再引用它。
     TwoStageSolver         编排器：Stage1 选方案，Stage2 调相位。
-    EpsilonConstraintRunner ε-约束扫描：max 主目标 s.t. total_loss <= eps。
+    EpsilonConstraintRunner ε-约束扫描：
+        max band_score s.t. intersection_loss <= eps。
 
-数学目标：
-    max  main_objective
-    s.t. total_loss <= ε
-其中 total_loss 汇总：
-    - Phase hinge loss；
-    - LinearSpec 软约束 slack；
-    - AlignmentLossBuilder 对齐损失。
+两个目标：
+    band_score
+        = band_objective - band_loss_weight * band_loss
+        band_loss 典型为 AlignmentLossBuilder 的对齐损失。
+
+    intersection_loss
+        = Phase hinge loss
+        + LinearSpec 软约束 slack。
+
+EpsilonConstraintRunner 只扫描 intersection_loss，
+alignment loss 已经通过 band_loss_weight 进入 band_score。
 """
 
 from __future__ import annotations
@@ -498,21 +503,38 @@ class TwoStageSolver(Solver):
                  mode: str = "global",
                  loss_builder: PhaseLossBuilder | None = None,
                  constraint_builder: ConstraintBuilder | None = None,
+                 alignment_builder: AlignmentLossBuilder | None = None,
+                 band_loss_weight: float = 0.0,
                  **tune_kwargs) -> None:
         self.stage1 = stage1
         self.mode = mode
         self.loss_builder = loss_builder
         self.constraint_builder = constraint_builder
+        self.alignment_builder = alignment_builder
+        self.band_loss_weight = band_loss_weight
         self.tune_kwargs = tune_kwargs
 
     def solve(self, arterial) -> Solution:
-        s1 = self.stage1.solve(arterial)
+        import inspect
+
+        # Stage 1 通常才支持 alignment_builder / band_loss_weight。
+        # 用签名判断而不是无条件传参，避免不兼容 stage1求解器报错。
+        stage1_params = inspect.signature(self.stage1.solve).parameters
+        stage1_kwargs = {}
+        if self.alignment_builder is not None and "alignment_builder" in stage1_params:
+            stage1_kwargs["alignment_builder"] = self.alignment_builder
+        if self.band_loss_weight and "band_loss_weight" in stage1_params:
+            stage1_kwargs["band_loss_weight"] = self.band_loss_weight
+        s1 = self.stage1.solve(arterial, **stage1_kwargs)
+
         try:
             from .flexible_phase_solver import PhaseTuneSolver as _NewPhaseTuneSolver
             tuner = _NewPhaseTuneSolver(mode=self.mode, **self.tune_kwargs)
             s2 = tuner.solve(arterial, prior=s1,
                              loss_builder=self.loss_builder,
-                             constraint_builder=self.constraint_builder)
+                             constraint_builder=self.constraint_builder,
+                             alignment_builder=self.alignment_builder,
+                             band_loss_weight=self.band_loss_weight)
             if s2.status == "optimal":
                 return s2
         except Exception:
@@ -547,7 +569,8 @@ class EpsilonConstraintRunner:
                  metric: str | None = None,
                  objective_mode: str = "sum",
                  balance_eps: float = 0.1,
-                 balance_terms: tuple[str, ...] = ("up", "down")) -> None:
+                 balance_terms: tuple[str, ...] = ("up", "down"),
+                 band_loss_weight: float = 0.0) -> None:
         self.mode = mode
         self.loss_builder = loss_builder
         self.constraint_builder = constraint_builder
@@ -557,11 +580,15 @@ class EpsilonConstraintRunner:
         self.up_weight = up_weight
         self.window_weights = window_weights
         self.max_loops = max_loops
+        self.band_loss_weight = band_loss_weight
         # metric: 帕累托前沿 x 轴的带宽口径。
         # 默认由 objective_mode 自动推导，保证“优化目标”和“展示口径”同源；
         # 仅当用户确实想报告另一个指标时才手动覆盖。
         if metric is None:
-            if objective_mode == "balanced":
+            if band_loss_weight != 0.0:
+                # 有带层损失权重时，x 轴默认用绿波带层综合目标 band_score。
+                metric = "band_score"
+            elif objective_mode == "balanced":
                 metric = "balanced"
             elif objective_mode == "balanced_composite":
                 metric = "objective"
@@ -585,37 +612,45 @@ class EpsilonConstraintRunner:
                                balance_terms=self.balance_terms)
 
     def _bandwidth(self, sol: Solution) -> float:
+        # metric="band_score" 时，x 轴就是绿波带层综合目标：
+        #   band_objective - band_loss_weight * band_loss
+        if self.metric == "band_score":
+            return float(sol.band_score)
         if self.mode == "global":
             bu = next(iter(sol.bandwidth_up.values()), 0.0)
             bd = next(iter(sol.bandwidth_down.values()), 0.0)
             if self.metric == "balanced":
                 return float(min(bu, bd))
             if self.metric == "objective":
-                return float(sol.objective)
+                return float(sol.band_score)
             return float(bu + bd)
+        if self.metric == "objective":
+            return float(sol.band_score)
         return float(sol.objective)
 
     def run(self, arterial, prior: Solution) -> list[tuple[float, float, float, Solution]]:
         tuner = self._make_tuner()
 
-        # P1: 最大带宽
+        # P1: 最大 band_score
         s_hi = tuner.solve(arterial, prior=prior, loss_builder=self.loss_builder,
                            constraint_builder=self.constraint_builder,
                            alignment_builder=self.alignment_builder,
+                           band_loss_weight=self.band_loss_weight,
                            objective="bandwidth")
         if s_hi.status != "optimal":
             return []
-        L_hi = s_hi.total_phase_loss
+        L_hi = s_hi.intersection_loss
 
-        # P2: 最小损失
+        # P2: 最小 intersection_loss
         s_lo = tuner.solve(arterial, prior=prior, loss_builder=self.loss_builder,
                            constraint_builder=self.constraint_builder,
                            alignment_builder=self.alignment_builder,
+                           band_loss_weight=self.band_loss_weight,
                            objective="loss")
         if s_lo.status != "optimal":
             return []
 
-        L_lo = s_lo.total_phase_loss
+        L_lo = s_lo.intersection_loss
         eps_values = list(np.linspace(L_lo, L_hi, max(self.n_points, 2)))
 
         frontier: list[tuple[float, float, float, Solution]] = []
@@ -623,10 +658,11 @@ class EpsilonConstraintRunner:
             s = tuner.solve(arterial, prior=prior, loss_builder=self.loss_builder,
                             constraint_builder=self.constraint_builder,
                             alignment_builder=self.alignment_builder,
-                            max_loss=eps, objective="bandwidth")
+                            band_loss_weight=self.band_loss_weight,
+                            max_intersection_loss=eps, objective="bandwidth")
             if s.status == "optimal":
                 frontier.append((float(eps), self._bandwidth(s),
-                                 s.total_phase_loss, s))
+                                 s.intersection_loss, s))
 
         self.frontier = frontier
         return frontier

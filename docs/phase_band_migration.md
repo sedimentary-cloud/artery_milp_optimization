@@ -35,3 +35,13 @@
   不再引用 `_LegacyPhaseTuneSolver`。
 - `general_case.py` 场景 1~10 全部通过。
 - `_LegacyPhaseTuneSolver` 暂留作历史参考；后续可删除。
+
+## 绿波带层与交叉口层拆分
+
+- `band_objective`：ObjectiveConfig 的 SumGroup / BalanceGroup 收益。
+- `band_loss`：绿波带层损失，典型为 AlignmentLoss。
+- `band_score = band_objective - band_loss_weight * band_loss`。
+- `intersection_loss`：相位 hinge loss + 软 LinearSpec slack。
+- 第一阶段支持把 alignment loss 以加权和形式加入 `band_score`。
+- 第二阶段做双目标 ε-约束：
+  `max band_score s.t. intersection_loss <= eps`。

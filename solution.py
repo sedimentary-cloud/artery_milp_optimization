@@ -37,7 +37,20 @@ class Solution:
     phase_times: dict[str, dict[str, float]] = field(default_factory=dict)
     # 窗口选择：路口名 -> {"plan": 方案名, "up_window": 下标, "down_window": 下标}
     window_choices: dict[str, dict[str, int | str]] = field(default_factory=dict)
-    # 相位 hinge 损失总和（第二阶段多目标优化用）
+    # ---- 绿波带层目标 ----
+    # band_objective: ObjectiveConfig 的 SumGroup + BalanceGroup 收益
+    # band_loss:      绿波带层损失，例如 AlignmentLoss
+    # band_score:     band_objective - band_loss_weight * band_loss
+    band_objective: float = 0.0
+    band_loss: float = 0.0
+    band_score: float = 0.0
+
+    # ---- 交叉口/相位层损失 ----
+    # 相位 hinge loss + 软 LinearSpec slack 违反量。
+    intersection_loss: float = 0.0
+
+    # 兼容旧字段：新语义下等于 intersection_loss，
+    # 即相位 hinge loss + 软 LinearSpec slack，不再包含 alignment。
     total_phase_loss: float = 0.0
     objective: float = 0.0
     status: str = "unknown"
@@ -68,6 +81,10 @@ class Solution:
             "window_bands": self.window_bands,
             "phase_times": self.phase_times,
             "window_choices": self.window_choices,
+            "band_objective": self.band_objective,
+            "band_loss": self.band_loss,
+            "band_score": self.band_score,
+            "intersection_loss": self.intersection_loss,
             "total_phase_loss": self.total_phase_loss,
             "objective": self.objective,
             "status": self.status,

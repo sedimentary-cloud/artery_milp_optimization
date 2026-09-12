@@ -265,11 +265,18 @@ FlexibleBandSolver(
 相位变量 g -> 绿灯窗
 绿灯窗 + t + b -> 基础段带宽
 b -> BandModel 窗口带格 B
-total_loss / ObjectiveConfig -> 目标
+
+band_score      = band_objective - λ * band_loss
+intersection_loss = 相位 hinge + 软 LinearSpec slack
 ```
 
-损失、硬/软约束、对齐损失、`max_loss` 和 `tunable_intersections`
-都直接进入同一个新模型，不再回退 legacy。
+两类目标明确区分：
+
+- 绿波带层：`band_objective`、`band_loss`、`band_score`；
+- 交叉口/相位层：`intersection_loss`。
+
+`alignment_builder` 属于绿波带层损失，通过 `band_loss_weight`
+以加权和形式进入 `band_score`，不再混进 `intersection_loss`。
 
 ### 6.5 EpsilonConstraintRunner
 
@@ -304,6 +311,12 @@ upper_threshold=50, upper_slope=3
 loss += upper_slope * max(0, g - upper_threshold)
 ```
 
+该损失进入交叉口层：
+
+```text
+intersection_loss
+```
+
 ### 7.2 LinearSpec
 
 线性硬/软约束：
@@ -312,7 +325,12 @@ loss += upper_slope * max(0, g - upper_threshold)
 LinearSpec({"I2.P1": 1.0, "I2.P2": 1.0}, sense=">=", rhs=60.0)
 ```
 
-软约束自动创建 slack 并进入总损失。
+硬约束直接进入 MILP；
+软约束自动创建 slack，进入交叉口层：
+
+```text
+intersection_loss += penalty * slack
+```
 
 ### 7.3 AlignmentLossBuilder
 
@@ -322,6 +340,14 @@ LinearSpec({"I2.P1": 1.0, "I2.P2": 1.0}, sense=">=", rhs=60.0)
 center = t_i + b / 2
 loss = max(0, |center - a_i| - tolerance)
 ```
+
+该损失属于绿波带层，进入 `band_loss`：
+
+```text
+band_score = band_objective - band_loss_weight * band_loss
+```
+
+它可以同时用在第一阶段和第二阶段。
 
 ## 8. 运行示例
 

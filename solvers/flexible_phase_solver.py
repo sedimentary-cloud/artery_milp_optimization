@@ -50,6 +50,8 @@ class FlexiblePhaseTuneSolver(Solver):
               constraint_builder=None,
               alignment_builder=None,
               max_loss: float | None = None,
+              max_intersection_loss: float | None = None,
+              band_loss_weight: float = 0.0,
               objective: str = "bandwidth",
               tunable_intersections: set[str] | None = None) -> Solution:
         down_global_output = (self.mode == "global")
@@ -67,6 +69,8 @@ class FlexiblePhaseTuneSolver(Solver):
             constraint_builder=constraint_builder,
             alignment_builder=alignment_builder,
             max_loss=max_loss,
+            max_intersection_loss=max_intersection_loss,
+            band_loss_weight=band_loss_weight,
             objective=objective,
             tunable_intersections=tunable_intersections,
         )
@@ -128,6 +132,8 @@ class PhaseTuneSolver(Solver):
               constraint_builder=None,
               alignment_builder=None,
               max_loss: float | None = None,
+              max_intersection_loss: float | None = None,
+              band_loss_weight: float = 0.0,
               objective: str = "bandwidth") -> Solution:
         config = self._build_config(arterial)
         solver = FlexiblePhaseTuneSolver(
@@ -145,6 +151,8 @@ class PhaseTuneSolver(Solver):
             constraint_builder=constraint_builder,
             alignment_builder=alignment_builder,
             max_loss=max_loss,
+            max_intersection_loss=max_intersection_loss,
+            band_loss_weight=band_loss_weight,
             objective=objective,
             tunable_intersections=self.tunable_intersections,
         )

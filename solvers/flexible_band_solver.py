@@ -28,6 +28,11 @@
     由 ObjectiveConfig 给出；
     SumGroup 直接加权求和；
     BalanceGroup 创建组 min 变量 B_g，并加 B_g <= member。
+
+可选绿波带层损失：
+    alignment_builder 会转成软约束 slack，band_loss_weight 控制它
+    以加权和形式进入目标：
+        max band_objective - band_loss_weight * band_loss
 """
 
 from __future__ import annotations
@@ -65,7 +70,20 @@ class FlexibleBandSolver(Solver):
         self.up_global_output = up_global_output
         self.down_global_output = down_global_output
 
-    def solve(self, arterial: Arterial) -> Solution:
+    def solve(self,
+              arterial: Arterial,
+              alignment_builder=None,
+              band_loss_weight: float = 0.0) -> Solution:
+        """求解第一阶段带宽组合 MILP。
+
+        Args:
+            arterial: 干线数据，绿灯窗已经固定。
+            alignment_builder: 可选，绿波带层对齐损失配置。
+                它会被转成线性软约束 slack，并以加权和形式进入目标。
+            band_loss_weight: band_loss 的权重 λ。
+                目标为：
+                    max band_objective - λ * band_loss
+        """
         C = arterial.cycle
         ints = arterial.intersection_order
         segs = arterial.segment_order
@@ -151,6 +169,75 @@ class FlexibleBandSolver(Solver):
             idx_opt.append(list(range(cur, cur + len(options[i]))))
             cur += len(options[i])
 
+        # ============================================================
+        # 绿波带层对齐损失：AlignmentLossBuilder
+        #
+        # 第一阶段没有相位变量 g，因此 AlignmentLossBuilder 里引用的
+        # tU_* / tD_* / b_up / b_down / bD_* 都要在这里映射到
+        # 第一阶段的变量。
+        # ============================================================
+        seg_names = [s.name for s in segs]
+        int_names = [v.name for v in ints]
+        name_to_i = {name: i for i, name in enumerate(int_names)}
+        seg_name_to_idx = {name: i for i, name in enumerate(seg_names)}
+
+        def resolve_band_loss_name(name: str) -> int | None:
+            """把 alignment 约束里的变量名映射到第一阶段 MILP 变量。"""
+            if name == "b_up":
+                return band_offset + band_model.B_idx["up"][n][0]
+            if name == "b_down":
+                return band_offset + band_model.B_idx["down"][n][0]
+            if name == "B_bal" and balance_vars:
+                return balance_vars.get(0)
+
+            if name.startswith("tU_") or name.startswith("tD_"):
+                iname = name[3:]
+                i = name_to_i.get(iname)
+                if i is None and iname.startswith("I"):
+                    try:
+                        i = int(iname[1:]) - 1
+                    except ValueError:
+                        i = None
+                if i is None or not (0 <= i < n):
+                    return None
+                return (idx_tU + i) if name.startswith("tU_") else (idx_tD + i)
+
+            if name.startswith("bD_"):
+                sname = name[3:]
+                si = seg_name_to_idx.get(sname)
+                if si is None and sname.startswith("seg"):
+                    try:
+                        si = int(sname[3:]) - 1
+                    except ValueError:
+                        si = None
+                if si is None or not (0 <= si < m):
+                    return None
+                return idx_bD + si
+
+            # 第一阶段没有相位变量，相位名直接忽略。
+            return None
+
+        # 每个元素：(原始 LinearSpec, [(变量下标, 系数), ...], slack 变量下标)
+        band_loss_resolved: list[tuple[object, list[tuple[int, float]], int]] = []
+        if alignment_builder is not None:
+            # 无论权重是否为 0，都解析并回填真实 band_loss；
+            # 权重为 0 时只是不把 loss 放进目标函数。
+            align_mode = "oneway" if self.down_style == "local" else "global"
+            align_specs = alignment_builder.to_linear_specs(
+                align_mode, int_names, seg_names
+            )
+            for spec in align_specs:
+                terms: list[tuple[int, float]] = []
+                for name, coef in spec.terms.items():
+                    var = resolve_band_loss_name(name)
+                    if var is not None:
+                        terms.append((var, coef))
+                if not terms:
+                    continue
+                slack = cur
+                cur += 1
+                band_loss_resolved.append((spec, terms, slack))
+
         # 到这里所有变量都排完了，nvar 是变量总数。
         nvar = cur
 
@@ -177,6 +264,12 @@ class FlexibleBandSolver(Solver):
                     var = _band_var(band_model, band, band_offset) # 找到成员带对应的变量下标
                     c[var] += -group.weight * group.eps            # 给成员带加一个很小的正权重，防止“只均衡、不榨总量”
 
+        # 绿波带层损失：
+        #   目标 = max band_objective - band_loss_weight * band_loss
+        # milp 求 min，所以 slack 系数写成 + band_loss_weight * penalty。
+        for spec, _, slack in band_loss_resolved:
+            c[slack] += band_loss_weight * spec.penalty
+
         # 变量界
         lb = np.zeros(nvar)
         ub = np.full(nvar, np.inf)
@@ -192,6 +285,8 @@ class FlexibleBandSolver(Solver):
             ub[gvar] = C
         for row in idx_opt:
             ub[row] = 1.0
+        for _, _, slack in band_loss_resolved:
+            ub[slack] = C
 
         # integrality[j] 告诉求解器第 j 个变量是什么类型：
         #   0 -> 连续变量，可以是小数；
@@ -330,6 +425,18 @@ class FlexibleBandSolver(Solver):
                 var = _band_var(band_model, band, band_offset)
                 add_row({gvar: 1.0, var: -1.0}, -np.inf, 0.0)
 
+        # 绿波带层对齐损失约束：
+        #   sense <= : expr - slack <= rhs
+        #   sense >= : expr + slack >= rhs
+        for spec, terms, slack in band_loss_resolved:
+            row_coefs = {var: coef for var, coef in terms}
+            if spec.sense == "<=":
+                add_row({**row_coefs, slack: -1.0}, -np.inf, spec.rhs)
+            elif spec.sense == ">=":
+                add_row({**row_coefs, slack: 1.0}, spec.rhs, np.inf)
+            else:
+                raise ValueError("band alignment soft '=' constraint is not supported")
+
         res = milp(c=c,
                    constraints=LinearConstraint(np.array(rows), lo_list, hi_list),
                    bounds=Bounds(lb, ub),
@@ -359,6 +466,26 @@ class FlexibleBandSolver(Solver):
             sol.bandwidth_down = {seg_names[i]: float(x[idx_bD + i]) for i in range(m)}
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
+
+        # 回填绿波带层损失和目标值。
+        band_loss = 0.0
+        for spec, terms, _ in band_loss_resolved:
+            expr_val = sum(coef * float(x[var]) for var, coef in terms)
+            if spec.sense == ">=":
+                violation = max(0.0, spec.rhs - expr_val)
+            elif spec.sense == "<=":
+                violation = max(0.0, expr_val - spec.rhs)
+            else:
+                violation = 0.0
+            band_loss += spec.penalty * violation
+
+        band_score = -float(res.fun)
+        sol.band_loss = float(band_loss)
+        sol.band_score = float(band_score)
+        sol.band_objective = float(band_score + band_loss_weight * band_loss)
+        sol.intersection_loss = 0.0
+        sol.total_phase_loss = 0.0
+
         chosen_opt: list[int] = []
         for i in range(n):
             vals = [float(x[j]) for j in idx_opt[i]]
