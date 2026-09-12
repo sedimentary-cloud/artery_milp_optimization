@@ -331,11 +331,40 @@ show("3.3 two-stage sum + max phase sum", s_3_3,
 print("=" * 70)
 print("4.1 单阶段 vs 双阶段 Pareto：band_objective vs intersection_loss")
 
+# 相位 hinge loss：同时包含“不能太短”和“不能过长”两类。
+# 斜率保持不同，便于观察不同相位对 intersection_loss 的贡献差异。
 loss_builder_4_1 = PhaseLossBuilder([
-    PhaseLossSpec("P1", threshold=35.0, slope=2.0, intersection="I2"),
-    PhaseLossSpec("P2", threshold=40.0, slope=1.0, intersection="I4"),
-    PhaseLossSpec("P1", threshold=50.0, slope=2.5, intersection="I5"),
-    PhaseLossSpec("P2", threshold=45.0, slope=3.0, intersection="I1"),
+    PhaseLossSpec("P1", threshold=35.0, slope=2.0,
+                  upper_threshold=45.0, upper_slope=1.2,
+                  intersection="I2"),
+    PhaseLossSpec("P2", threshold=40.0, slope=1.0,
+                  upper_threshold=55.0, upper_slope=2.0,
+                  intersection="I4"),
+    PhaseLossSpec("P1", threshold=50.0, slope=2.5,
+                  upper_threshold=58.0, upper_slope=1.5,
+                  intersection="I5"),
+    PhaseLossSpec("P2", threshold=45.0, slope=3.0,
+                  upper_threshold=56.0, upper_slope=1.0,
+                  intersection="I1"),
+])
+
+# 额外约束类型：
+#   1) 硬等式：I1.P1 + I1.P2 = 75（初始相位满足，但第二阶段必须保持）
+#   2) 硬上界：I3.P2 <= 45
+#   3) 硬下界：I6.P1 >= 30
+#   4) 软下界：I2.P1 + I2.P2 >= 70，缺口罚款 1.5
+#   5) 软上界：I4.P1 + I4.P2 <= 60，超出罚款 2.0
+#   6) 软下界：I5.P1 >= 50，缺口罚款 1.2
+constraint_builder_4_1 = ConstraintBuilder([
+    LinearSpec({"I1.P1": 1.0, "I1.P2": 1.0}, sense="=", rhs=75.0),
+    LinearSpec({"I3.P2": 1.0}, sense="<=", rhs=45.0),
+    LinearSpec({"I6.P1": 1.0}, sense=">=", rhs=30.0),
+    LinearSpec({"I2.P1": 1.0, "I2.P2": 1.0}, sense=">=",
+               rhs=70.0, soft=True, penalty=1.5),
+    LinearSpec({"I4.P1": 1.0, "I4.P2": 1.0}, sense="<=",
+               rhs=60.0, soft=True, penalty=2.0),
+    LinearSpec({"I5.P1": 1.0}, sense=">=",
+               rhs=50.0, soft=True, penalty=1.2),
 ])
 
 # 单阶段固定相位：不调 g，只优化带宽和带前沿。
@@ -347,6 +376,7 @@ s4_stage1 = PhaseTuneSolver(
     arterial,
     prior=s_1_1,
     loss_builder=loss_builder_4_1,
+    constraint_builder=constraint_builder_4_1,
     objective="bandwidth",
 )
 
@@ -356,12 +386,14 @@ s4_hi = tuner_4_1.solve(
     arterial,
     prior=s_1_1,
     loss_builder=loss_builder_4_1,
+    constraint_builder=constraint_builder_4_1,
     objective="bandwidth",
 )
 s4_lo = tuner_4_1.solve(
     arterial,
     prior=s_1_1,
     loss_builder=loss_builder_4_1,
+    constraint_builder=constraint_builder_4_1,
     objective="loss",
 )
 
@@ -381,6 +413,7 @@ if s4_hi.status == "optimal" and s4_lo.status == "optimal":
             arterial,
             prior=s_1_1,
             loss_builder=loss_builder_4_1,
+            constraint_builder=constraint_builder_4_1,
             max_intersection_loss=eps,
             objective="bandwidth",
         )
