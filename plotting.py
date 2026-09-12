@@ -197,7 +197,10 @@ def plot_time_space(arterial: Arterial,
         # 每个路口中心画一条水平细黑线（在灯条上方，路口编号下方）
         ax.axhline(pos[i], color="black", linewidth=0.8, zorder=6)
 
-        # 在灯条附近标注“路口.相位”，文字小、半透明白底。
+        # 在灯条附近标注“路口.相位”：
+        #   - 横坐标放在每个周期灯条的中心；
+        #   - 沿时间轴每个周期重复，铺满整张时空图；
+        #   - 垂直位置分别贴近上行/下行灯条。
         phase_labels = []
         if plan.up_phase:
             phase_labels.append((f"{inter.name}.{plan.up_phase}",
@@ -206,11 +209,14 @@ def plot_time_space(arterial: Arterial,
             phase_labels.append((f"{inter.name}.{plan.down_phase}",
                                  pos[i] - h / 2))
         for phase_text, phase_y in phase_labels:
-            ax.text(label_x, phase_y, phase_text,
-                    ha="left", va="center", fontsize=6.5,
-                    color="black", zorder=21, clip_on=True,
-                    bbox=dict(facecolor="white", edgecolor="none",
-                              alpha=0.65, boxstyle="round,pad=0.08"))
+            for k in range(k_min, k_max + 1):
+                bar_center_x = k * C + C / 2.0
+                ax.text(bar_center_x, phase_y, phase_text,
+                        ha="center", va="center", fontsize=5.0,
+                        color="black", zorder=21, clip_on=True,
+                        bbox=dict(facecolor="white", edgecolor="none",
+                                  alpha=0.65,
+                                  boxstyle="round,pad=0.05"))
 
         ax.text(label_x, pos[i], inter.name,
                 ha="left", va="center", fontsize=11, fontweight="bold",
