@@ -17,7 +17,7 @@ from .phase import (AlignmentLossBuilder, ConstraintBuilder, LinearExpr,
                     expr_coefs, window_exprs)
 
 
-class PhaseTuneSolver(Solver):
+class _LegacyPhaseTuneSolver(Solver):
     """第二阶段：锁定方案，优化相位时长和绿波带宽。
 
     mode:
@@ -496,7 +496,8 @@ class TwoStageSolver(Solver):
     def solve(self, arterial) -> Solution:
         s1 = self.stage1.solve(arterial)
         try:
-            tuner = PhaseTuneSolver(mode=self.mode, **self.tune_kwargs)
+            from .flexible_phase_solver import PhaseTuneSolver as _NewPhaseTuneSolver
+            tuner = _NewPhaseTuneSolver(mode=self.mode, **self.tune_kwargs)
             s2 = tuner.solve(arterial, prior=s1,
                              loss_builder=self.loss_builder,
                              constraint_builder=self.constraint_builder)
@@ -561,7 +562,8 @@ class EpsilonConstraintRunner:
         self.frontier: list[tuple[float, float, float, Solution]] = []
 
     def _make_tuner(self) -> PhaseTuneSolver:
-        return PhaseTuneSolver(mode=self.mode,
+        from .flexible_phase_solver import PhaseTuneSolver as _NewPhaseTuneSolver
+        return _NewPhaseTuneSolver(mode=self.mode,
                                down_weight=self.down_weight,
                                up_weight=self.up_weight,
                                window_weights=self.window_weights,
