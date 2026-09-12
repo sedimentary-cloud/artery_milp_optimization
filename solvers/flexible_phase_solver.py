@@ -59,6 +59,24 @@ class FlexiblePhaseTuneSolver(Solver):
               alignment_builder=None,
               max_loss=None,
               objective: str = "bandwidth") -> Solution:
+        # ============================================================
+        # 先解释相位是什么：
+        #
+        # 一个路口的信号周期里有很多“相位”，比如：
+        #   P1：主干道放行；P2：支路放行；P3：左转放行……
+        #
+        # 每个相位持续多少秒，就是变量 g_{i,p}。
+        # 相位时长必须满足：
+        #   min_green_p <= g_{i,p} <= max_green_p
+        #   Σ_p g_{i,p} + lost_time = C
+        #
+        # lost_time 是相位切换时的黄灯/全红损失时间。
+        #
+        # 上行绿灯窗的起点 = 上行相位之前所有相位时长之和；
+        # 上行绿灯窗的终点 = 起点 + 上行相位自身的时长。
+        # 下行同理。
+        # ============================================================
+
         # 1) 相位时长优化（高级功能沿用 legacy 求解器）
         tuner = _LegacyPhaseTuneSolver(mode=self.mode,
                                        down_weight=self.down_weight,
@@ -79,6 +97,20 @@ class FlexiblePhaseTuneSolver(Solver):
             name = s_phase.plan_choices.get(inter.name) if s_phase.plan_choices else None
             plan = inter.plan_by_name(name) if name else inter.plans[0]
             selected[inter.name] = plan
+
+        # ============================================================
+        # 第二步：把优化出来的 phase_times 变成“固定绿灯窗”。
+        #
+        # 假设 P1=30s，P2=20s，lost_time=10s，C=60s：
+        #   P1 绿灯窗 = [0, 30] 秒
+        #   P2 绿灯窗 = [30, 50] 秒
+        # 换算成占周期比例：
+        #   P1 = [0.0, 0.5]
+        #   P2 = [0.5, 0.833]
+        #
+        # 这样后面 FlexibleBandSolver 就只需要处理固定窗口，
+        # 不需要再关心相位变量。
+        # ============================================================
 
         # 2) 用 phase_times 生成固定窗口，锁定方案
         new_intersections = {}
@@ -123,6 +155,16 @@ class FlexiblePhaseTuneSolver(Solver):
             segments=arterial.segments,
             order=arterial.order,
         )
+
+        # ============================================================
+        # 第三步：用 BandModel + ObjectiveConfig 做最终带宽组合优化。
+        #
+        # 这一步和 FlexibleBandSolver 完全一样：
+        #   - 基础段带宽 b[d,i]
+        #   - 窗口带格 B[d,k,j] <= b[d,i]
+        #   - SumGroup / BalanceGroup 目标
+        # 只是窗口边界已经由相位固定好了。
+        # ============================================================
 
         # 3) 用 BandModel + ObjectiveConfig 做最终带宽组合优化
         s_final = FlexibleBandSolver(

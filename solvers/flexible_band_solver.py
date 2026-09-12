@@ -72,6 +72,36 @@ class FlexibleBandSolver(Solver):
         n, m = len(ints), len(segs)
         self.config.validate(n)
 
+        # ============================================================
+        # 先把数学符号翻译成“初中生也能懂”的话：
+        #
+        # 想象每个路口是一个公交站，绿波带是一辆“绿波车”。
+        # 我们想让这辆车尽量宽、尽量顺地通过所有站。
+        #
+        # C: 一个信号周期的秒数。
+        # n: 路口数量；m = n - 1 是路段数量。
+        #
+        # b_up_i / b_down_i:
+        #   第 i 段路上，绿波带的“宽度”（单位秒）。
+        #   带宽越宽，说明能一次通过的车队越长。
+        #
+        # tU_i / tD_i:
+        #   绿波带车头到达第 i 个路口的时刻。
+        #   因为信号周期会重复，所以只记录在 [0, C) 内的时刻。
+        #
+        # mU_i / mD_i:
+        #   整数圈数。车头到达下一站可能跨了 1 个周期、2 个周期，
+        #   用整数 m 记录“少算/多算”了几个周期。
+        #
+        # B[d, k, j]:
+        #   从第 j 个路口开始、连续 k 个路口的窗口带宽度。
+        #   k=2 就是一段路；k=n 就是整条干线。
+        #
+        # δ:
+        #   0/1 开关。每个路口有多个“方案×上行窗口×下行窗口”选项，
+        #   δ=1 表示选中某个选项，δ=0 表示不选。
+        # ============================================================
+
         # 方案 × 上行窗口 × 下行窗口 联合选项
         options: list[list[tuple[int, int, int, object, object]]] = []
         for inter in ints:
@@ -86,7 +116,10 @@ class FlexibleBandSolver(Solver):
                 raise ValueError(f"路口 {inter.name} 没有可用方案/窗口")
             options.append(opts)
 
-        # 变量布局
+        # ============================================================
+        # 变量在一条长向量 x 里的排列顺序。
+        # 求解器 HiGHS 只认识一维向量，所以我们要记住每个变量在第几位。
+        # ============================================================
         idx_tU = 0
         idx_mU = n
         idx_tD = n + m
@@ -164,14 +197,34 @@ class FlexibleBandSolver(Solver):
         for i in range(n):
             add_row({idx_opt[i][o]: 1.0 for o in range(len(options[i]))}, 1.0, 1.0)
 
-        # 带前沿传递
+        # ============================================================
+        # 约束 1：带前沿传递
+        #
+        # 上行：车头从路口 i 出发，开过第 i 段路需要 tau_up_i 秒。
+        #       所以 tU_{i+1} = tU_i + tau_up_i + C * mU_i。
+        #       移项后就是下面代码里的等式。
+        #
+        # 下行：车是从右往左开，所以用 tD_i 和 tD_{i+1} 的关系。
+        # ============================================================
         for i, seg in enumerate(segs):
             add_row({idx_tU + i + 1: 1, idx_tU + i: -1, idx_mU + i: -C},
                     seg.travel_time_up, seg.travel_time_up)
             add_row({idx_tD + i: 1, idx_tD + i + 1: -1, idx_mD + i: -C},
                     seg.travel_time_down, seg.travel_time_down)
 
-        # 上行：每个路段两端窗口约束，窗口边界用选中选项线性组合
+        # ============================================================
+        # 约束 2：绿波带必须落在绿灯窗口里（上行）
+        #
+        # 设路口 i 选中的上行绿灯窗是 [start_i*C, end_i*C]。
+        # 带子从 tU_i 开始，宽度是 b_up_i，所以带子占据：
+        #     [tU_i, tU_i + b_up_i]
+        #
+        # 要整条带子都在绿灯里，就要：
+        #     tU_i >= start_i*C
+        #     tU_i + b_up_i <= end_i*C
+        #
+        # 因为窗口可能还没定，所以边界写成“选中的 δ 乘以对应 start/end”的和。
+        # ============================================================
         for i in range(n):
             up_starts = {idx_opt[i][o]: wu.start * C
                          for o, (_, _, _, wu, _) in enumerate(options[i])}
@@ -184,7 +237,13 @@ class FlexibleBandSolver(Solver):
             add_row({idx_tU + i: 1.0, idx_bU + i: 1.0, **i0_ends}, -np.inf, 0.0)
             add_row({idx_tU + i + 1: 1.0, idx_bU + i: 1.0, **i1_ends}, -np.inf, 0.0)
 
-        # 下行：每个路段两端窗口约束
+        # ============================================================
+        # 约束 3：绿波带必须落在绿灯窗口里（下行）
+        #
+        # 和上行完全一样的道理，只是方向相反：
+        #     tD_i >= start_i*C
+        #     tD_i + b_down_i <= end_i*C
+        # ============================================================
         for i in range(n):
             dn_starts = {idx_opt[i][o]: wd.start * C
                          for o, (_, _, _, _, wd) in enumerate(options[i])}
@@ -197,7 +256,17 @@ class FlexibleBandSolver(Solver):
             add_row({idx_tD + i: 1.0, idx_bD + i: 1.0, **i0_ends}, -np.inf, 0.0)
             add_row({idx_tD + i + 1: 1.0, idx_bD + i: 1.0, **i1_ends}, -np.inf, 0.0)
 
-        # 带格约束：B <= b
+        # ============================================================
+        # 约束 4：窗口带格
+        #
+        # B[d,k,j] 表示“连续 k 个路口”的公共带宽。
+        # 公共带宽不能超过窗口内任何一段路的基础带宽：
+        #     B[d,k,j] <= b[d,i]    i = j ... j+k-1
+        #
+        # 例如 k=3 时：
+        #     B <= b_1, B <= b_2, B <= b_3
+        # 所以 B 自动变成三段里最小的那个，也就是“公共瓶颈”。
+        # ============================================================
         for d in ("up", "down"):
             b_idx = idx_bU if d == "up" else idx_bD
             for k in range(2, n + 1):
@@ -207,7 +276,13 @@ class FlexibleBandSolver(Solver):
                         add_row({B_var: 1.0, b_idx + i: -1.0},
                                 -np.inf, 0.0)
 
-        # BalanceGroup: B_g <= member
+        # ============================================================
+        # 约束 5：均衡组取 min
+        #
+        # 如果用户想让“上下行一样宽”，可以配置 BalanceGroup：
+        #     B_g <= b_up, B_g <= b_down
+        # 最大化 B_g 时，它自动变成两者的较小值。
+        # ============================================================
         for gidx, group in enumerate(self.config.balance_groups):
             gvar = balance_vars[gidx]
             for member in group.members:
