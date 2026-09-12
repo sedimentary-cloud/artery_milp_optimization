@@ -160,22 +160,22 @@ class FlexibleBandSolver(Solver):
         c = np.zeros(nvar)
 
         # SumGroup：每个带标识直接按权重加进目标。
-        for group in self.config.sum_groups:
-            for key, weight in group.terms.items():
-                band = _parse_band_key(key, n)
-                var = _band_var(band_model, band, band_offset)
-                c[var] += -weight
+        for group in self.config.sum_groups:                       # 遍历每个加权和组
+            for key, weight in group.terms.items():                # 取出本组里的“带标识 -> 权重”
+                band = _parse_band_key(key, n)                     # 把字符串解析成 BandKey(direction, k, start)
+                var = _band_var(band_model, band, band_offset)     # 找到这个带对应的 MILP 变量下标
+                c[var] += -weight                                  # 目标原本是 +weight，但 milp 求最小值，所以取负
 
         # BalanceGroup：组 min 变量按组权重加负号；
         # 再给每个成员加一个很小的 ε 托底项，避免均衡达标后其他带摆烂。
-        for gidx, group in enumerate(self.config.balance_groups):
-            gvar = balance_vars[gidx]
-            c[gvar] += -group.weight
-            if group.eps > 0:
-                for member in group.members:
-                    band = _parse_band_key(member, n)
-                    var = _band_var(band_model, band, band_offset)
-                    c[var] += -group.weight * group.eps
+        for gidx, group in enumerate(self.config.balance_groups):  # 遍历每个均衡组
+            gvar = balance_vars[gidx]                              # 取出该均衡组的组 min 变量下标
+            c[gvar] += -group.weight                               # 最大化 B_g，所以目标系数取 -weight
+            if group.eps > 0:                                      # 如果开启了 ε 托底
+                for member in group.members:                       # 遍历该均衡组的所有成员带
+                    band = _parse_band_key(member, n)              # 解析成员带标识
+                    var = _band_var(band_model, band, band_offset) # 找到成员带对应的变量下标
+                    c[var] += -group.weight * group.eps            # 给成员带加一个很小的正权重，防止“只均衡、不榨总量”
 
         # 变量界
         lb = np.zeros(nvar)
@@ -314,8 +314,7 @@ class FlexibleBandSolver(Solver):
                 for j in range(n - k + 1):
                     B_var = band_offset + band_model.B_idx[d][k][j]
                     for i in range(j, j + k - 1):
-                        add_row({B_var: 1.0, b_idx + i: -1.0},
-                                -np.inf, 0.0)
+                        add_row({B_var: 1.0, b_idx + i: -1.0}, -np.inf, 0.0)
 
         # ============================================================
         # 约束 5：均衡组取 min
