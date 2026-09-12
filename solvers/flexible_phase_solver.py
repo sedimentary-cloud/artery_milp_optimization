@@ -1,9 +1,25 @@
 """FlexiblePhaseTuneSolver：相位微调 + BandModel + ObjectiveConfig。
 
-当前作为桥接版本：
-1. 先用现有 PhaseTuneSolver 做相位时长优化，得到 phase_times；
-2. 用 phase_times 生成固定绿灯窗，锁住选中方案；
-3. 再用 FlexibleBandSolver + ObjectiveConfig 做最终带宽组合优化。
+变量：
+    g_{i,p}          路口 i 第 p 个相位的绿灯时长（秒）
+    b_up_i/b_down_i  基础段带宽
+    B[d,k,j]         窗口带宽度
+    tU_i / tD_i      带前沿时刻
+    mU_i / mD_i      整数圈数
+
+相位约束：
+    min_green_p <= g_{i,p} <= max_green_p
+    Σ_p g_{i,p} + lost_time = C
+
+窗口表达式：
+    up_start_i = Σ_{p before up_phase} g_{i,p}
+    up_end_i   = up_start_i + g_{i, up_phase}
+    下行同理。
+
+求解流程（桥接版）：
+    1) 先用 legacy PhaseTuneSolver 优化相位，得到 phase_times；
+    2) 用 phase_times 生成固定绿灯窗；
+    3) 再用 FlexibleBandSolver + ObjectiveConfig 做最终带宽组合优化。
 """
 
 from __future__ import annotations

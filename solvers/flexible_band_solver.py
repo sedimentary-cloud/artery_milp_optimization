@@ -1,8 +1,33 @@
 """FlexibleBandSolver：读取 BandModel + ObjectiveConfig 组装 MILP。
 
-当前版本假设：
-- 每个路口使用第一个信控方案；
-- 每个方向取第一个绿灯窗口（后续再接方案/窗口选择层）。
+数学模型
+--------
+变量：
+    b_up_i / b_down_i      第 i 段基础带宽
+    tU_i / tD_i            带前沿到达各路口时刻（mod C）
+    mU_i / mD_i            整数圈数修正量
+    B[d,k,j]               窗口带宽度
+    δ                      方案/窗口联合选择 0-1 变量
+
+约束：
+    1) 带前沿传递
+         tU_{i+1} = tU_i + tau_up_i + C * mU_i
+         tD_i = tD_{i+1} + tau_down_i + C * mD_i
+
+    2) 每个路段两端窗口约束
+         t_i >= Σ δ * start * C
+         t_i + b_i <= Σ δ * end * C
+
+    3) 窗口带格
+         B[d,k,j] <= b[d,i]   for i = j ... j+k-1
+
+    4) 方案/窗口选择
+         Σ_options δ = 1
+
+目标：
+    由 ObjectiveConfig 给出；
+    SumGroup 直接加权求和；
+    BalanceGroup 创建组 min 变量 B_g，并加 B_g <= member。
 """
 
 from __future__ import annotations

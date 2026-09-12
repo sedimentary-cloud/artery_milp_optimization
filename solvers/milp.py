@@ -1,12 +1,18 @@
-"""MILP 求解器。
+"""Legacy MILP 求解器实现。
 
-CompositeBandSolver：双向全局绿波带宽求解器，支持 sum / balanced / balanced_composite 目标。
-    - 全局一条上行带 b_up、一条下行带 b_down，目标 max b_up + k * b_down；
-    - 每段路上/下行各一个整数圈数变量 m，吸收双向错位；
-    - 每个路口每个方向取"最宽的一段绿灯窗"作为该方向的放行窗口
-      （多窗口择优、方案选择留待完整版实现）。
+注意：
+    当前推荐入口是 solvers/flexible_band_solver.py：
+    - CompositeBandSolver  = FlexibleBandSolver(composite_config(...))
+    - OneWayPrioritySolver = FlexibleBandSolver(oneway_config(...))
 
-MaxBandMILPSolver：完整版占位（分段带宽 / 方案选择 / 多目标），后续实现。
+本文件仍保留旧的 CompositeBandSolver / OneWayPrioritySolver / MaxBandMILPSolver
+实现，用于兼容和参照。
+
+旧模型要点：
+    - 全局带：b_up、b_down 只有方向级变量；
+    - 分段带：下行可为每段 bD_i 独立带宽；
+    - 窗口带：B <= b 的线性不等式；
+    - 方案选择：δ 0-1 变量 + 仿射窗口边界。
 """
 
 from __future__ import annotations

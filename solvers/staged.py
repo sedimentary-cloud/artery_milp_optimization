@@ -1,8 +1,20 @@
-"""两阶段求解：先选方案，再锁方案优化相位时长。
+"""两阶段求解与 ε-约束帕累托扫描。
 
-Stage 1: 现有 CompositeBandSolver / OneWayPrioritySolver，只负责确定 plan_choices。
-Stage 2: PhaseTuneSolver 锁定方案后，把相位时长作为连续变量重新优化带宽。
-TwoStageSolver 对外提供统一接口：stage2 失败时 fallback 到 stage1 的解。
+当前结构：
+    PhaseTuneSolver        薄包装器：
+                           默认带宽目标走 FlexiblePhaseTuneSolver；
+                           带 loss/constraint/alignment 时回退 legacy。
+    _LegacyPhaseTuneSolver 旧相位优化实现，保留高级损失/约束行为。
+    TwoStageSolver         编排器：Stage1 选方案，Stage2 调相位。
+    EpsilonConstraintRunner ε-约束扫描：max 主目标 s.t. total_loss <= eps。
+
+数学目标：
+    max  main_objective
+    s.t. total_loss <= ε
+其中 total_loss 汇总：
+    - Phase hinge loss；
+    - LinearSpec 软约束 slack；
+    - AlignmentLossBuilder 对齐损失。
 """
 
 from __future__ import annotations

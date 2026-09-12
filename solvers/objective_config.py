@@ -1,9 +1,27 @@
 """目标配置层：把“全局带 / 分段带 / 小绿波带”统一为带标识。
 
-本模块不求解，只负责声明和校验目标结构。
-目标分两类块：
-  SumGroup:     成员自由加权求和；
-  BalanceGroup: 组内取 min，组整体加权进入目标。
+目标由两类块组成：
+
+SumGroup
+    自由加权和：
+        Σ w_key * band_key
+    任意方向、任意窗口大小、任意权重。
+
+BalanceGroup
+    组内取 min：
+        B_group <= band_member   for each member
+        目标加入 weight * B_group
+    默认带 ε 托底：
+        + weight * eps * Σ band_member
+    校验规则：
+        - 组内成员窗口大小 k 必须相同；
+        - 成员不可被多个 BalanceGroup 引用；
+        - 允许与 SumGroup 共存，用于 sum + eps*min 的复合目标。
+
+带标识示例：
+    "up.global"            -> k = n
+    "down.seg2"            -> k = 2
+    "up.win3@I1-I3"        -> k = 3
 """
 
 from __future__ import annotations
