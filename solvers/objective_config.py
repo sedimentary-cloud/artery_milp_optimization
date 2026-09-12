@@ -78,12 +78,10 @@ class ObjectiveConfig:
                 raise ValueError(
                     f"BalanceGroup 成员窗口大小必须相同，当前 k={sorted(ks)}"
                 )
-            # 2) 组内成员不得在 SumGroup 中带权
+            # 2) 组内成员不可被多个 BalanceGroup 引用。
+            #    允许与 SumGroup 同时出现，用于 balanced_composite 这类
+            #    “sum + eps*min” 目标；语义由配置者负责。
             for b in bands:
-                if b in seen_in_sum:
-                    raise ValueError(
-                        f"带 {b.to_str()} 同时出现在 SumGroup 和 BalanceGroup"
-                    )
                 if b in balance_member_to_group:
                     raise ValueError(
                         f"带 {b.to_str()} 被多个 BalanceGroup 引用"
