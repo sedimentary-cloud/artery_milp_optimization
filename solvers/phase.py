@@ -82,33 +82,99 @@ def _widest(windows):
     return max(windows, key=lambda w: w.width)
 
 
+def direction_phase_name(plan: SignalPlan, direction: str) -> str:
+    """解析某个方向最终绑定的相位名。
+
+    优先级：
+        1. 显式 up_phase / down_phase（兼容旧方案）；
+        2. Phase.serves 中声明的单一服务相位。
+    """
+    if direction not in ("up", "down"):
+        raise ValueError(f"未知方向: {direction}")
+
+    explicit = plan.up_phase if direction == "up" else plan.down_phase
+    if explicit is not None:
+        names = {ph.name for ph in plan.phases}
+        if explicit not in names:
+            raise ValueError(
+                f"方案 {plan.name} 的 {direction}_phase={explicit!r} "
+                f"不在 phases 中"
+            )
+        return explicit
+
+    served = plan.serving_phase_names(direction)
+    if len(served) == 1:
+        return served[0]
+    if len(served) == 0:
+        raise ValueError(
+            f"方案 {plan.name} 无法解析 {direction} 方向相位；"
+            f"请设置 {direction}_phase 或给某个 Phase 加 serves"
+        )
+    raise NotImplementedError(
+        f"方案 {plan.name} 的 {direction} 方向由多个相位服务: {served}；"
+        f"当前 window_exprs 只支持每个方向绑定单一服务相位。"
+    )
+
+
+def phase_start_times(plan: SignalPlan, phase_times: dict[str, float] | None = None) -> dict[str, float]:
+    """计算每个相位的开始时刻（秒），包含 phase_lost_times 常量。
+
+    Args:
+        plan: 信控方案。
+        phase_times: 可选的相位时长覆盖，通常来自 Solution.phase_times。
+            未提供时使用 Phase.green。
+    """
+    starts: dict[str, float] = {}
+    acc = 0.0
+    for ph in plan.phases:
+        starts[ph.name] = acc
+        g = (float(phase_times[ph.name])
+             if phase_times is not None and ph.name in phase_times
+             else float(ph.green))
+        acc += g + float(plan.phase_lost_times.get(ph.name, 0.0))
+    return starts
+
+
 def window_exprs(plan: SignalPlan, C: float) -> WindowExpr:
     """把方案转为相位变量线性表达式。
 
-    - 若 plan.phases 非空：按 phases 顺序累计出 up_phase / down_phase 的
-      绿灯起止时刻；
-    - 否则：退回固定窗口（widest window），表达式退化为常数。
+    - 若 plan.phases 非空：按 phases 顺序累计出方向绑定相位的绿灯起止时刻；
+      相位间损失 phase_lost_times 作为常数项加入后续相位的起点。
+    - 若 plan.phases 为空：退回固定窗口（widest window），表达式退化为常数。
     """
     if plan.phases:
         idx = {ph.name: i for i, ph in enumerate(plan.phases)}
-        if plan.up_phase not in idx:
-            raise ValueError(f"方案 {plan.name} 缺少 up_phase")
-        if plan.down_phase not in idx:
-            raise ValueError(f"方案 {plan.name} 缺少 down_phase")
+
+        # 校验 phase_lost_times 的 key 是否都是有效相位名。
+        for pname in plan.phase_lost_times:
+            if pname not in idx:
+                raise ValueError(
+                    f"方案 {plan.name} 的 phase_lost_times 含未知相位: {pname}"
+                )
+
+        up_name = direction_phase_name(plan, "up")
+        down_name = direction_phase_name(plan, "down")
 
         def start_expr(phase_name: str) -> LinearExpr:
             i = idx[phase_name]
-            return LinearExpr(const=0.0, coefs={j: 1.0 for j in range(i)})
+            const = sum(
+                float(plan.phase_lost_times.get(plan.phases[j].name, 0.0))
+                for j in range(i)
+            )
+            return LinearExpr(const=const, coefs={j: 1.0 for j in range(i)})
 
         def end_expr(phase_name: str) -> LinearExpr:
             i = idx[phase_name]
-            return LinearExpr(const=0.0, coefs={j: 1.0 for j in range(i + 1)})
+            start = start_expr(phase_name)
+            coefs = dict(start.coefs)
+            coefs[i] = coefs.get(i, 0.0) + 1.0
+            return LinearExpr(const=start.const, coefs=coefs)
 
         return WindowExpr(
-            up_start=start_expr(plan.up_phase),
-            up_end=end_expr(plan.up_phase),
-            down_start=start_expr(plan.down_phase),
-            down_end=end_expr(plan.down_phase),
+            up_start=start_expr(up_name),
+            up_end=end_expr(up_name),
+            down_start=start_expr(down_name),
+            down_end=end_expr(down_name),
             phases=list(plan.phases),
         )
 

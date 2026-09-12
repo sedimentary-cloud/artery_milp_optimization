@@ -40,13 +40,24 @@ class Phase:
         name: 相位名称；
         green: 当前/默认绿灯时长（秒）；
         min_green: 该相位绿灯时长下限（秒）；
-        max_green: 该相位绿灯时长上限（秒）。
+        max_green: 该相位绿灯时长上限（秒）；
+        serves: 该相位服务的方向集合，取值可包含 "up" / "down"。
+            例如 serves=("up", "down") 表示该相位同时服务上下行。
     """
 
     name: str
     green: float = 0.0
     min_green: float = 0.0
     max_green: float = 999.0
+    serves: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for direction in self.serves:
+            if direction not in ("up", "down"):
+                raise ValueError(
+                    f"Phase {self.name} 的 serves 只能是 up/down，"
+                    f"当前为 {direction!r}"
+                )
 
 
 @dataclass
@@ -67,7 +78,26 @@ class SignalPlan:
     phases: list[Phase] = field(default_factory=list)
     up_phase: str | None = None
     down_phase: str | None = None
-    lost_time: float = 0.0  # 周期损失时间（秒）
+    lost_time: float = 0.0  # 周期尾部损失时间（秒）
+
+    # 相位间损失时间：{相位名: 该相位绿灯结束后分配的损失秒数}。
+    # 例如 {"P1": 5.0} 表示 P1 绿灯结束后有 5 秒黄灯/全红，
+    # 然后才进入下一个相位。
+    phase_lost_times: dict[str, float] = field(default_factory=dict)
+
+    def total_lost_time(self) -> float:
+        """周期总损失时间 = 相位间损失 + 尾部损失。"""
+        return float(self.lost_time + sum(self.phase_lost_times.values()))
+
+    def phase_by_name(self, name: str) -> Phase:
+        for ph in self.phases:
+            if ph.name == name:
+                return ph
+        raise KeyError(f"方案 {self.name} 没有相位 {name}")
+
+    def serving_phase_names(self, direction: str) -> list[str]:
+        """返回通过 serves 声明服务某方向的相位名列表。"""
+        return [ph.name for ph in self.phases if direction in ph.serves]
 
     def up_green_ratio(self) -> float:
         """上行总绿信比。"""

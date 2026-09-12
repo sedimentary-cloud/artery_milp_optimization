@@ -183,20 +183,26 @@ def _selected_green_windows(solution, arterial):
         down_win = None
 
         # 1) 相位优化后的窗口。
+        # phase_start_times 会把 phase_lost_times 作为常数间隔计入。
         pt = solution.phase_times.get(inter.name) if solution and solution.phase_times else None
         if pt and plan.phases:
-            starts: dict[str, float] = {}
-            acc = 0.0
-            for ph in plan.phases:
-                starts[ph.name] = acc
-                acc += float(pt.get(ph.name, ph.green))
-            if plan.up_phase in starts and plan.up_phase in pt:
-                us = starts[plan.up_phase]
-                ue = us + float(pt[plan.up_phase])
+            from .phase import direction_phase_name, phase_start_times
+            starts = phase_start_times(plan, pt)
+            try:
+                up_name = direction_phase_name(plan, "up")
+            except (ValueError, NotImplementedError):
+                up_name = plan.up_phase
+            try:
+                down_name = direction_phase_name(plan, "down")
+            except (ValueError, NotImplementedError):
+                down_name = plan.down_phase
+            if up_name in starts and up_name in pt:
+                us = starts[up_name]
+                ue = us + float(pt[up_name])
                 up_win = (us, ue)
-            if plan.down_phase in starts and plan.down_phase in pt:
-                ds = starts[plan.down_phase]
-                de = ds + float(pt[plan.down_phase])
+            if down_name in starts and down_name in pt:
+                ds = starts[down_name]
+                de = ds + float(pt[down_name])
                 down_win = (ds, de)
 
         # 2) 方案/窗口选择信息。

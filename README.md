@@ -48,9 +48,14 @@ start, end ∈ [0, 1]
 
 - `up_windows`: 上行绿灯窗口列表；
 - `down_windows`: 下行绿灯窗口列表；
-- `phases`: 可选相位结构；
-- `up_phase` / `down_phase`: 上/下行绑定到哪个相位；
-- `lost_time`: 周期损失时间（秒）。
+- `phases`: 可选相位结构；每个 `Phase` 支持：
+  - `green` / `min_green` / `max_green`；
+  - `serves`: 服务方向集合，例如 `("up", "down")`；
+- `up_phase` / `down_phase`: 显式上/下行绑定相位；
+  未设置时可由 `Phase.serves` 自动解析；
+- `lost_time`: 周期尾部损失时间（秒）；
+- `phase_lost_times`: 相位间损失时间，形如 `{"P1": 5.0}`，
+  表示 P1 绿灯结束后先损失 5 秒，再进入下一个相位。
 
 ### 2.3 Segment
 
@@ -175,15 +180,23 @@ B[d,k,j] <= b[d,i]     i = j ... j+k-1
 
 ```text
 min_green_p <= g_{i,p} <= max_green_p
-Σ_p g_{i,p} + lost_time = C
+Σ_p g_{i,p} + Σ_p phase_lost_times_p + lost_time = C
 ```
 
 相位决定的绿灯窗：
 
 ```text
-up_start_i = Σ_{p before up_phase} g_{i,p}
-up_end_i   = up_start_i + g_{i, up_phase}
+start(P_k) = Σ_{j<k} (g_j + phase_lost_times_j)
+end(P_k)   = start(P_k) + g_k
+
+up_start_i = start(up_phase)
+up_end_i   = end(up_phase)
+down_start_i = start(down_phase)
+down_end_i   = end(down_phase)
 ```
+
+若 `up_phase` / `down_phase` 未显式设置，则从
+`Phase.serves` 中解析单一服务相位。
 
 ## 5. 目标函数
 

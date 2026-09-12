@@ -21,11 +21,13 @@
 约束链路：
 1. 相位约束：
        min_green_{i,p} <= g_{i,p} <= max_green_{i,p}
-       Σ_p g_{i,p} + lost_time_i = C
+       Σ_p g_{i,p} + Σ_p phase_lost_times_p + lost_time_i = C
 2. 相位生成绿灯窗：
-       up_start_i = Σ_{p before up_phase} g_{i,p}
-       up_end_i   = up_start_i + g_{i, up_phase}
-       下行同理。
+       start(P_k) = Σ_{j<k} (g_j + phase_lost_times_j)
+       end(P_k)   = start(P_k) + g_k
+       up_start_i   = start(up_phase)
+       up_end_i     = end(up_phase)
+       下行同理；未显式设置 up_phase/down_phase 时从 Phase.serves 解析。
 3. 基础段带宽必须落在路段两端路口的绿灯窗内：
        tU_i     + b_up_i <= up_end_i
        tU_{i+1} + b_up_i <= up_end_{i+1}
@@ -581,10 +583,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
         for i, plan in enumerate(selected):
             if not plan.phases or not tunable[i]:
                 continue
-            # 等式：Σ_p g_{i,p} = C - lost_time_i。
+            # 等式：Σ_p g_{i,p} = C - 总损失时间。
+            # 总损失 = phase_lost_times + 尾部 lost_time。
             # add_row 的 lo=hi 表示等式约束。
             total = {idx_g[i][p]: 1.0 for p in range(len(plan.phases))}
-            add_row(total, C - plan.lost_time, C - plan.lost_time)
+            total_loss = plan.total_lost_time()
+            add_row(total, C - total_loss, C - total_loss)
 
         # ------------------------- hinge 损失约束 -------------------------
         # 过小惩罚：ℓ >= threshold - g   ->   ℓ + g >= threshold

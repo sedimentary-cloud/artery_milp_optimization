@@ -115,6 +115,9 @@ def plot_time_space(arterial: Arterial,
     ints = arterial.intersection_order
     pos = _positions(arterial)
 
+    # 局部导入，避免 plotting 在包初始化阶段与 solvers 产生循环依赖。
+    from .solvers.phase import direction_phase_name, phase_start_times
+
     # 最终显示区间从 0 开始；右边界动态计算。
     # 绘制周期仍从负值开始（k_min = -1），负时间部分会被 xlim 截断。
     t_min = 0.0
@@ -154,22 +157,27 @@ def plot_time_space(arterial: Arterial,
             except (TypeError, ValueError, KeyError):
                 pass
 
-        # 第二阶段相位优化后，用 phase_times 反算选中方案的绿灯窗
+        # 第二阶段相位优化后，用 phase_times 反算选中方案的绿灯窗。
+        # phase_start_times 会把 phase_lost_times 作为常数间隔计入。
         if (solution is not None
                 and inter.name in solution.phase_times
                 and plan.phases):
             pt = solution.phase_times[inter.name]
-            starts: dict[str, float] = {}
-            acc = 0.0
-            for ph in plan.phases:
-                starts[ph.name] = acc
-                acc += float(pt.get(ph.name, ph.green))
-            if plan.up_phase in starts and plan.up_phase in pt:
-                us = starts[plan.up_phase]
-                win_up = GreenWindow(us / C, (us + float(pt[plan.up_phase])) / C)
-            if plan.down_phase in starts and plan.down_phase in pt:
-                ds = starts[plan.down_phase]
-                win_dn = GreenWindow(ds / C, (ds + float(pt[plan.down_phase])) / C)
+            starts = phase_start_times(plan, pt)
+            try:
+                up_name = direction_phase_name(plan, "up")
+            except (ValueError, NotImplementedError):
+                up_name = plan.up_phase
+            try:
+                down_name = direction_phase_name(plan, "down")
+            except (ValueError, NotImplementedError):
+                down_name = plan.down_phase
+            if up_name in starts and up_name in pt:
+                us = starts[up_name]
+                win_up = GreenWindow(us / C, (us + float(pt[up_name])) / C)
+            if down_name in starts and down_name in pt:
+                ds = starts[down_name]
+                win_dn = GreenWindow(ds / C, (ds + float(pt[down_name])) / C)
         # 需要绘制的绿灯窗口集合。
         # 有 phase_times 时，使用反算出的单窗口；否则绘制方案里的全部绿灯窗口。
         if (solution is not None
@@ -201,12 +209,21 @@ def plot_time_space(arterial: Arterial,
         #   - 横坐标放在每个周期灯条的中心；
         #   - 沿时间轴每个周期重复，铺满整张时空图；
         #   - 垂直位置分别贴近上行/下行灯条。
+        try:
+            label_up_phase = direction_phase_name(plan, "up")
+        except (ValueError, NotImplementedError):
+            label_up_phase = plan.up_phase
+        try:
+            label_down_phase = direction_phase_name(plan, "down")
+        except (ValueError, NotImplementedError):
+            label_down_phase = plan.down_phase
+
         phase_labels = []
-        if plan.up_phase:
-            phase_labels.append((f"{inter.name}.{plan.up_phase}",
+        if label_up_phase:
+            phase_labels.append((f"{inter.name}.{label_up_phase}",
                                  pos[i] + h / 2))
-        if plan.down_phase:
-            phase_labels.append((f"{inter.name}.{plan.down_phase}",
+        if label_down_phase:
+            phase_labels.append((f"{inter.name}.{label_down_phase}",
                                  pos[i] - h / 2))
         for phase_text, phase_y in phase_labels:
             for k in range(k_min, k_max + 1):

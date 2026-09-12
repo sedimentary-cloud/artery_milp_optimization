@@ -335,7 +335,8 @@ class _LegacyPhaseTuneSolver(Solver):
                 add_row({phase_idx[i][p]: 1.0}, ph.min_green, ph.max_green)
             if plan.phases:
                 total = {phase_idx[i][p]: 1.0 for p in range(len(plan.phases))}
-                add_row(total, C - plan.lost_time, C - plan.lost_time)
+                total_loss = plan.total_lost_time()
+                add_row(total, C - total_loss, C - total_loss)
 
         # ---------------- 均衡目标约束 ----------------
         if idx_bal is not None:

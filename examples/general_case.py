@@ -37,27 +37,60 @@ from greenwave.solvers import (AlignmentLossBuilder, ConstraintBuilder,
 C = 90.0
 
 
-def make_plan(name, phases, up_phase, down_phase, lost_time):
-    """根据相位初始时长生成 Stage 1 需要的固定绿灯窗。"""
+def make_plan(name, phases, up_phase=None, down_phase=None, lost_time=0.0,
+              phase_lost_times=None, terminal_lost_time=None):
+    """根据相位初始时长生成 Stage 1 需要的固定绿灯窗。
+
+    方向绑定优先级：
+        显式 up_phase / down_phase；
+        否则从 Phase.serves 中解析单一服务相位。
+    相位间损失 phase_lost_times 加到指定相位绿灯末尾，
+    作为下一个相位起点之前的常数间隔。
+    """
+    phase_lost_times = dict(phase_lost_times or {})
+    if terminal_lost_time is not None:
+        lost_time = terminal_lost_time
+
     starts = {}
     acc = 0.0
     for ph in phases:
         starts[ph.name] = acc
-        acc += ph.green
+        acc += ph.green + float(phase_lost_times.get(ph.name, 0.0))
 
     def dur(p):
         return next(ph.green for ph in phases if ph.name == p)
 
-    us = starts[up_phase]
-    ds = starts[down_phase]
+    def resolve_direction(direction, explicit):
+        if explicit is not None:
+            return explicit
+        served = [ph.name for ph in phases if direction in ph.serves]
+        if len(served) == 1:
+            return served[0]
+        if len(served) == 0:
+            raise ValueError(
+                f"方案 {name} 无法解析 {direction} 方向相位；"
+                f"请提供 {direction}_phase 或设置 Phase.serves"
+            )
+        raise NotImplementedError(
+            f"方案 {name} 的 {direction} 方向由多个相位服务: {served}；"
+            f"make_plan 目前只支持单一服务相位。"
+        )
+
+    up_name = resolve_direction("up", up_phase)
+    down_name = resolve_direction("down", down_phase)
+    us = starts[up_name]
+    ds = starts[down_name]
     return SignalPlan(
         name=name,
-        up_windows=[GreenWindow(us / C, (us + dur(up_phase)) / C)],
-        down_windows=[GreenWindow(ds / C, (ds + dur(down_phase)) / C)],
+        up_windows=[GreenWindow(us / C, (us + dur(up_name)) / C)],
+        down_windows=[GreenWindow(ds / C, (ds + dur(down_name)) / C)],
         phases=phases,
+        # 如果调用方显式给了 up_phase/down_phase，则保留；
+        # 否则保留 None，让第二阶段通过 Phase.serves 解析方向绑定。
         up_phase=up_phase,
         down_phase=down_phase,
         lost_time=lost_time,
+        phase_lost_times=phase_lost_times,
     )
 
 
@@ -530,3 +563,104 @@ print("Case 4.1 Pareto 图已保存到 "
       "case_4_1_intersection_loss_pareto.png")
 print("Case 4.1 单阶段时空图已保存到 "
       "case_4_1_stage1_time_space.png")
+
+
+print("=" * 70)
+print("5.1 Phase.serves：同一相位同时服务上下行")
+
+# 小型 3 路口测试网，仍使用公共周期 C=90。
+phases_5_1 = [
+    Phase("P1", 30.0, 10.0, 50.0, serves=("up", "down")),
+    Phase("P2", 35.0, 10.0, 55.0, serves=()),
+]
+plan_5_1 = make_plan(
+    "双向直行",
+    phases_5_1,
+    lost_time=25.0,  # 30 + 35 + 25 = 90
+)
+
+art_5_1 = Arterial(
+    cycle=C,
+    intersections={
+        n: Intersection(n, plans=[plan_5_1])
+        for n in ["X1", "X2", "X3"]
+    },
+    segments={
+        "xs1": Segment("xs1", 180.0, 180.0, 12.0, 12.0),
+        "xs2": Segment("xs2", 180.0, 180.0, 12.0, 12.0),
+    },
+    order=["X1", "xs1", "X2", "xs2", "X3"],
+)
+
+s_5_1_prior = CompositeBandSolver(down_weight=1.0).solve(art_5_1)
+s_5_1 = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
+    art_5_1,
+    prior=s_5_1_prior,
+)
+print(f"  status={s_5_1.status}, objective={s_5_1.objective:.2f}")
+print(f"  phase_times={s_5_1.phase_times}")
+plot_time_space(
+    art_5_1,
+    s_5_1,
+    save_path="case_5_1_phase_serves_both.png",
+    notes=[
+        "Phase.serves = ('up', 'down')",
+        "Same phase serves both directions",
+    ],
+)
+print("  时空图已保存到 case_5_1_phase_serves_both.png")
+
+
+print("=" * 70)
+print("5.2 相位末尾损失：lost 指定加到某个相位末尾")
+
+phases_5_2 = [
+    Phase("P1", 30.0, 10.0, 50.0, serves=("up",)),
+    Phase("P2", 25.0, 10.0, 50.0, serves=("down",)),
+    Phase("P3", 10.0, 5.0, 20.0, serves=()),
+]
+plan_5_2 = make_plan(
+    "带末尾损失",
+    phases_5_2,
+    up_phase="P1",
+    down_phase="P2",
+    phase_lost_times={"P1": 5.0},  # P1 绿灯后先损失 5s，再进入 P2
+    lost_time=20.0,                # 周期尾部损失
+)
+# 周期检查：30 + 25 + 10 + 5 + 20 = 90
+assert abs(phases_5_2[0].green + phases_5_2[1].green
+           + phases_5_2[2].green
+           + plan_5_2.total_lost_time() - C) < 1e-9
+
+art_5_2 = Arterial(
+    cycle=C,
+    intersections={
+        n: Intersection(n, plans=[plan_5_2])
+        for n in ["Y1", "Y2", "Y3"]
+    },
+    segments={
+        "ys1": Segment("ys1", 180.0, 180.0, 12.0, 12.0),
+        "ys2": Segment("ys2", 180.0, 180.0, 12.0, 12.0),
+    },
+    order=["Y1", "ys1", "Y2", "ys2", "Y3"],
+)
+
+s_5_2_prior = CompositeBandSolver(down_weight=1.0).solve(art_5_2)
+s_5_2 = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
+    art_5_2,
+    prior=s_5_2_prior,
+)
+print(f"  status={s_5_2.status}, objective={s_5_2.objective:.2f}")
+print(f"  phase_times={s_5_2.phase_times}")
+print(f"  phase_lost_times={plan_5_2.phase_lost_times}, "
+      f"terminal_lost={plan_5_2.lost_time}")
+plot_time_space(
+    art_5_2,
+    s_5_2,
+    save_path="case_5_2_phase_end_lost.png",
+    notes=[
+        "phase_lost_times={'P1': 5.0}",
+        "Loss is inserted after P1 before P2",
+    ],
+)
+print("  时空图已保存到 case_5_2_phase_end_lost.png")
