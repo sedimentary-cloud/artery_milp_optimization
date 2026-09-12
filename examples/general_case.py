@@ -102,6 +102,11 @@ def show(tag, sol, save_path, notes=None):
     print(f"  时空图已保存到 {save_path}")
 
 
+# ----------------------------------------------------------------------
+# Case 1：最基础的全局双向带宽目标。
+# 只测试 ObjectiveConfig 的 SumGroup：max b_up + b_down。
+# 没有相位优化，也没有额外损失或约束。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("1) 求和目标（CompositeBandSolver）")
 s_sum = CompositeBandSolver(down_weight=1.0).solve(arterial)
@@ -109,6 +114,11 @@ show("sum", s_sum, "case_01_sum.png",
      notes=["Objective: max b_up + b_down",
             "No hinge loss / no extra constraint"])
 
+# ----------------------------------------------------------------------
+# Case 2：测试均衡目标。
+# 同时奖励总带宽与上下行均衡 min(b_up, b_down)，验证 BalanceGroup
+# 以及 eps 托底项是否符合预期。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("2) 均衡目标（CompositeBandSolver, balanced_composite）")
 s_bal = CompositeBandSolver(objective_mode="balanced_composite",
@@ -117,6 +127,11 @@ show("balanced", s_bal, "case_02_balanced.png",
      notes=["Objective: max b_up + b_down + eps*B_bal",
             "B_bal = min(b_up, b_down)"])
 
+# ----------------------------------------------------------------------
+# Case 3：测试 one-way 优先级模型。
+# 上行优化全局带，下行优化分段带和窗口带加权和。
+# 用于验证 OneWayPrioritySolver 的 window_weights 目标。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("3) 上行优先 + 下行窗口加权（OneWayPrioritySolver）")
 s_one = OneWayPrioritySolver(up_weight=1.0,
@@ -126,6 +141,11 @@ show("one-way", s_one, "case_03_oneway.png",
      notes=["Objective: up-priority + down window bands",
             "window_weights: win2=1.0, win3=0.5"])
 
+# ----------------------------------------------------------------------
+# Case 4：测试两阶段优化。
+# Stage 1 选择方案/固定窗口，Stage 2 锁定方案后优化相位 g 和带宽。
+# 用来观察相位可调后，带宽相比只做 Stage 1 是否还能提升。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("4) 两阶段相位优化（TwoStageSolver）")
 s_two = TwoStageSolver(CompositeBandSolver(down_weight=1.0),
@@ -134,6 +154,11 @@ show("two-stage", s_two, "case_04_two_stage.png",
      notes=["Stage 2: phase durations optimized",
             "No hinge loss / no extra constraint"])
 
+# ----------------------------------------------------------------------
+# Case 5：测试相位 hinge loss。
+# 用 PhaseLossBuilder 给多个路口的相位设置过低阈值惩罚。
+# objective="loss" 时只最小化 intersection_loss。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("5) 相位 hinge 损失（I2.P1<35, I4.P2<40, I5.P1<50, I1.P2<45）")
 loss_builder = PhaseLossBuilder([
@@ -148,6 +173,11 @@ show("loss", s_loss, "case_05_loss.png",
      notes=["Min total hinge loss",
             "I2.P1<35, I4.P2<40, I5.P1<50, I1.P2<45"])
 
+# ----------------------------------------------------------------------
+# Case 6：测试硬 LinearSpec 约束。
+# I2.P1 + I2.P2 >= 60 必须严格满足。
+# 用于验证硬约束直接进入 MILP，不产生 slack，也不计入 intersection_loss。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("6) 硬约束：I2.P1 + I2.P2 >= 60")
 hard = ConstraintBuilder([
@@ -158,6 +188,11 @@ s_hard = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
 show("hard", s_hard, "case_06_hard.png",
      notes=["Hard constraint: I2.P1 + I2.P2 >= 60"])
 
+# ----------------------------------------------------------------------
+# Case 7：测试软 LinearSpec 约束。
+# I5.P1 + I5.P2 >= 90 允许缺口，缺口按 penalty=3.0 计入 intersection_loss。
+# 用于验证软约束 slack 与目标函数的耦合关系。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("7) 软约束：I5.P1 + I5.P2 >= 90，缺口罚款 3.0")
 soft = ConstraintBuilder([
@@ -170,6 +205,11 @@ show("soft", s_soft, "case_07_soft.png",
      notes=["Soft constraint: I5.P1 + I5.P2 >= 90",
             "penalty = 3.0 / s"])
 
+# ----------------------------------------------------------------------
+# Case 8：测试全局双目标 Pareto 前沿。
+# 第一目标：最大化总带宽；第二目标：最小化 intersection_loss。
+# 用 EpsilonConstraintRunner 做 ε-约束扫描，并输出每个点的时空图。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("8) 帕累托前沿（hinge loss + 最大带宽目标）")
 runner = EpsilonConstraintRunner(mode="global",
@@ -223,6 +263,11 @@ if frontier:
     print("帕累托前沿图已保存到 case_08_pareto_frontier.png")
 
 
+# ----------------------------------------------------------------------
+# Case 9：测试 one-way 模式下的双目标 Pareto 前沿。
+# 第一目标：上行优先 + 下行窗口带；第二目标：intersection_loss。
+# 用于验证 one-way 模式下 ε-约束扫描和窗口带目标。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("9) one-way 帕累托前沿：window_weights={2:0.1, 3:0.05}")
 s_one_low = OneWayPrioritySolver(
@@ -289,6 +334,11 @@ if frontier_one:
     print("one-way 帕累托前沿图已保存到 case_09_oneway_pareto_frontier.png")
 
 
+# ----------------------------------------------------------------------
+# Case 10：测试 AlignmentLossBuilder 的绿波带对齐损失。
+# 对比“无对齐”和“加权对齐”后的带中心位置。
+# 用于验证 alignment 进入 band_loss / band_score，而不是 intersection_loss。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("10) 带边/带中心对齐损失（纯线性 hinge）")
 # 目标中心：由上游累计行驶时间推出，再折算到 [0, C)
@@ -351,6 +401,12 @@ print()
 print("有对齐损失时空图已保存到 case_10_alignment_loss.png")
 
 
+# ----------------------------------------------------------------------
+# Case 11：测试仅一阶段与两阶段在 Pareto 前沿上的差异。
+# 第一目标 band_score，第二目标 intersection_loss。
+# 一阶段相位固定，只能得到一个可行点；
+# 两阶段可通过调整相位 g 扩展 Pareto 前沿。
+# ----------------------------------------------------------------------
 print("=" * 70)
 print("11) 仅一阶段 vs 两阶段 Pareto：band_score vs intersection_loss")
 # 本案例只输出 Pareto 图，不输出时空图。
