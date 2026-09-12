@@ -510,6 +510,21 @@ fig.tight_layout()
 fig.savefig("case_4_1_intersection_loss_pareto.png", dpi=150)
 plt.close(fig)
 
+# 为每一个双阶段 Pareto 点输出一张时空图。
+for idx, (loss, obj, eps, sol) in enumerate(front_4_1, start=1):
+    png = f"case_4_1_stage2_pareto_ts_{idx:02d}.png"
+    plot_time_space(
+        arterial,
+        sol,
+        save_path=png,
+        notes=[
+            f"Case 4.1 Stage 2 Pareto point {idx}",
+            f"eps={eps:.2f}s, intersection_loss={loss:.2f}s, "
+            f"band_objective={obj:.2f}",
+        ],
+    )
+    print(f"  双阶段 Pareto 时空图已保存到 {png}")
+
 print()
 print("Case 4.1 Pareto 图已保存到 "
       "case_4_1_intersection_loss_pareto.png")
