@@ -22,8 +22,8 @@ from .solution import Solution
 # 全局绿波带 / 局部绿波带 / 窗口短绿波带的图层样式，互不干扰
 GLOBAL_BAND_ALPHA = 0.5
 GLOBAL_BAND_ZORDER = 3
-GLOBAL_UP_COLOR = "#62eb43"
-GLOBAL_DOWN_COLOR = "#3880ed"
+GLOBAL_UP_COLOR = "#4AC52E"
+GLOBAL_DOWN_COLOR = "#3077e2"
 
 WINDOW_BAND_ALPHA = 0.05
 WINDOW_BAND_ZORDER = 1.1
@@ -196,6 +196,21 @@ def plot_time_space(arterial: Arterial,
                                            edgecolor="none", zorder=5))
         # 每个路口中心画一条水平细黑线（在灯条上方，路口编号下方）
         ax.axhline(pos[i], color="black", linewidth=0.8, zorder=6)
+
+        # 在灯条附近标注“路口.相位”，文字小、半透明白底。
+        phase_labels = []
+        if plan.up_phase:
+            phase_labels.append((f"{inter.name}.{plan.up_phase}",
+                                 pos[i] + h / 2))
+        if plan.down_phase:
+            phase_labels.append((f"{inter.name}.{plan.down_phase}",
+                                 pos[i] - h / 2))
+        for phase_text, phase_y in phase_labels:
+            ax.text(label_x, phase_y, phase_text,
+                    ha="left", va="center", fontsize=6.5,
+                    color="black", zorder=21, clip_on=True,
+                    bbox=dict(facecolor="white", edgecolor="none",
+                              alpha=0.65, boxstyle="round,pad=0.08"))
 
         ax.text(label_x, pos[i], inter.name,
                 ha="left", va="center", fontsize=11, fontweight="bold",
