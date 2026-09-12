@@ -387,48 +387,67 @@ def _band_var(band_model: BandModel, band, offset: int) -> int:
     return offset + band_model.var_of(band)
 
 
-def composite_config(up_weight: float = 1.0,
-                     down_weight: float = 1.0,
-                     objective_mode: str = "sum",
-                     balance_eps: float = 0.1,
+def composite_config(up_weight: float = 1.0,                 # 上行全局带权重
+                     down_weight: float = 1.0,               # 下行全局带权重
+                     objective_mode: str = "sum",            # 目标模式：sum / balanced / balanced_composite
+                     balance_eps: float = 0.1,               # 复合目标里 min 项的权重
                      balance_terms: tuple[str, ...] = ("up", "down")) -> ObjectiveConfig:
-    """CompositeBandSolver 的预设目标配置。"""
-    if objective_mode == "sum":
-        return ObjectiveConfig(sum_groups=[SumGroup({
-            "up.global": up_weight,
-            "down.global": down_weight,
+    """CompositeBandSolver 的预设目标配置。
+
+    生成目标：
+        sum                 -> max up_weight*b_up + down_weight*b_down
+        balanced            -> max min(b_up, b_down)
+        balanced_composite  -> max up_weight*b_up + down_weight*b_down
+                                    + balance_eps * min(b_up, b_down)
+    """
+    if objective_mode == "sum":                              # 情况 1：纯加权和
+        return ObjectiveConfig(sum_groups=[SumGroup({        # 创建一个 SumGroup
+            "up.global": up_weight,                          # 上行全局带权重
+            "down.global": down_weight,                      # 下行全局带权重
         })])
-    if objective_mode == "balanced":
-        members = [f"{d}.global" for d in balance_terms]
-        return ObjectiveConfig(balance_groups=[BalanceGroup(members, weight=1.0)])
-    if objective_mode == "balanced_composite":
-        members = [f"{d}.global" for d in balance_terms]
+
+    if objective_mode == "balanced":                         # 情况 2：纯均衡
+        members = [f"{d}.global" for d in balance_terms]     # 例如 ["up.global", "down.global"]
+        return ObjectiveConfig(balance_groups=[BalanceGroup(members, weight=1.0)])  # max min(members)
+
+    if objective_mode == "balanced_composite":               # 情况 3：加权和 + 均衡托底
+        members = [f"{d}.global" for d in balance_terms]     # 均衡组包含哪些全局带
         return ObjectiveConfig(
-            sum_groups=[SumGroup({
-                "up.global": up_weight,
-                "down.global": down_weight,
+            sum_groups=[SumGroup({                           # 1) 先加常规加权和
+                "up.global": up_weight,                      # 上行全局带权重
+                "down.global": down_weight,                  # 下行全局带权重
             })],
-            balance_groups=[BalanceGroup(members, weight=balance_eps)],
+            balance_groups=[BalanceGroup(members, weight=balance_eps)],  # 2) 再加 eps*min
         )
-    raise ValueError(f"unknown objective_mode: {objective_mode}")
+
+    raise ValueError(f"unknown objective_mode: {objective_mode}")  # 未知模式直接报错
 
 
-def oneway_config(up_weight: float = 1.0,
-                  window_weights: dict[int, float] | None = None,
-                  segment_down_weights: dict[str, float] | None = None,
-                  n_intersections: int = 0) -> ObjectiveConfig:
-    """OneWayPrioritySolver 的预设目标配置（下行分段 + 窗口带）。"""
-    ww = window_weights or {2: 1.0}
-    seg_weights = dict(segment_down_weights or {})
-    terms: dict[str, float] = {"up.global": up_weight}
-    for i in range(n_intersections - 1):
-        seg_name = f"seg{i+1}"
-        terms[f"down.{seg_name}"] = seg_weights.get(seg_name, ww.get(2, 1.0))
-    w3 = ww.get(3, 0.0)
-    if w3 > 0:
-        for j in range(1, n_intersections - 1):
-            terms[f"down.win3@I{j}-I{j+2}"] = w3
-    return ObjectiveConfig(sum_groups=[SumGroup(terms)])
+def oneway_config(up_weight: float = 1.0,                        # 上行全局带权重
+                  window_weights: dict[int, float] | None = None,  # 窗口权重：{2: w2, 3: w3}
+                  segment_down_weights: dict[str, float] | None = None,  # 下行逐段权重
+                  n_intersections: int = 0) -> ObjectiveConfig:    # 路口数量，用于展开所有段/窗口
+    """OneWayPrioritySolver 的预设目标配置（下行分段 + 窗口带）。
+
+    生成目标：
+        max up_weight * b_up_global
+          + Σ 下行每段权重 * b_down_seg
+          + Σ 下行三窗口权重 * B_down_win3
+    """
+    ww = window_weights or {2: 1.0}                              # 默认 k=2 窗口权重为 1.0
+    seg_weights = dict(segment_down_weights or {})               # 复制一份逐段权重，避免修改原字典
+    terms: dict[str, float] = {"up.global": up_weight}           # 目标项先放上行全局带
+
+    for i in range(n_intersections - 1):                         # 遍历所有相邻路口段
+        seg_name = f"seg{i+1}"                                   # 生成 seg1, seg2, ...
+        terms[f"down.{seg_name}"] = seg_weights.get(seg_name, ww.get(2, 1.0))  # 下行该段权重
+
+    w3 = ww.get(3, 0.0)                                          # 取 k=3 窗口的权重
+    if w3 > 0:                                                   # 只有正权重才需要加入目标
+        for j in range(1, n_intersections - 1):                  # 遍历所有三路口窗口
+            terms[f"down.win3@I{j}-I{j+2}"] = w3                 # 加入下行三窗口带
+
+    return ObjectiveConfig(sum_groups=[SumGroup(terms)])         # 所有项放进一个 SumGroup
 
 
 def make_composite_solver(down_weight: float = 1.0,
