@@ -50,7 +50,8 @@ class Solution:
     # 相位 hinge loss + 软 LinearSpec slack 违反量。
     intersection_loss: float = 0.0
 
-    # 兼容旧字段：新语义下等于 intersection_loss，
+    # 兼容旧字段；新代码请直接使用 intersection_loss。
+    # 新语义下 total_phase_loss 等于 intersection_loss，
     # 即相位 hinge loss + 软 LinearSpec slack，不再包含 alignment。
     total_phase_loss: float = 0.0
     objective: float = 0.0

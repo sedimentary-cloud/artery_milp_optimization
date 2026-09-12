@@ -94,7 +94,8 @@ def show(tag, sol, save_path, notes=None):
     print(f"[{tag}] status={sol.status}, objective={sol.objective:.2f}")
     print(f"  b_up={sol.bandwidth_up.get('seg1', 0):.2f}  "
           f"b_down={sol.bandwidth_down.get('seg1', 0):.2f}  "
-          f"loss={sol.total_phase_loss:.2f}")
+          f"band_loss={sol.band_loss:.2f}  "
+          f"intersection_loss={sol.intersection_loss:.2f}")
     if sol.phase_times:
         print(f"  phase_times={sol.phase_times}")
     plot_time_space(arterial, sol, save_path=save_path, notes=notes)
@@ -179,11 +180,12 @@ runner = EpsilonConstraintRunner(mode="global",
                                  metric="sum")
 frontier = runner.run(arterial, prior=s_sum)
 
-print("  idx  eps      sum_bandwidth   loss   time-space png")
-for idx, (eps, b, loss, sol) in enumerate(frontier, start=1):
+print("  idx  eps      sum_bandwidth   intersection_loss   time-space png")
+for idx, (eps, b, inter_loss, sol) in enumerate(frontier, start=1):
     png = f"case_08_pareto_ts_{idx:02d}.png"
-    print(f"  {idx:>3}  {eps:6.2f}   {b:6.2f}    {loss:6.2f}   {png}")
-    notes = [f"Pareto point {idx}: eps={eps:.2f}s, loss={loss:.2f}s",
+    print(f"  {idx:>3}  {eps:6.2f}   {b:6.2f}    {inter_loss:6.2f}   {png}")
+    notes = [f"Pareto point {idx}: eps={eps:.2f}s, "
+             f"intersection_loss={inter_loss:.2f}s",
              "Objective = b_up + b_down",
              "Hinge losses: I2.P1<35, I4.P2<40, I5.P1<50, I1.P2<45"]
     plot_time_space(arterial, sol, save_path=png, notes=notes)
@@ -211,8 +213,8 @@ if frontier:
         ax.scatter([knee[0]], [knee[1]], marker="*", s=220,
                    color="black", label="Knee point", zorder=5)
     ax.set_xlabel("Sum bandwidth b_up + b_down (s)")
-    ax.set_ylabel("Phase loss (s)")
-    ax.set_title("Pareto Frontier: Sum Bandwidth vs Phase Loss")
+    ax.set_ylabel("Intersection loss (s)")
+    ax.set_title("Pareto Frontier: Sum Bandwidth vs Intersection Loss")
     ax.grid(alpha=0.3)
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
@@ -242,12 +244,13 @@ runner_one = EpsilonConstraintRunner(
 )
 frontier_one = runner_one.run(arterial, prior=s_one_low)
 
-print("  idx  eps      objective   loss   time-space png")
-for idx, (eps, obj, loss, sol) in enumerate(frontier_one, start=1):
+print("  idx  eps      objective   intersection_loss   time-space png")
+for idx, (eps, obj, inter_loss, sol) in enumerate(frontier_one, start=1):
     png = f"case_09_oneway_pareto_ts_{idx:02d}.png"
-    print(f"  {idx:>3}  {eps:6.2f}   {obj:6.2f}    {loss:6.2f}   {png}")
+    print(f"  {idx:>3}  {eps:6.2f}   {obj:6.2f}    {inter_loss:6.2f}   {png}")
     notes = [
-        f"One-way Pareto point {idx}: eps={eps:.2f}s, loss={loss:.2f}s",
+        f"One-way Pareto point {idx}: eps={eps:.2f}s, "
+        f"intersection_loss={inter_loss:.2f}s",
         "window_weights: win2=0.10, win3=0.05",
         "Hinge losses: I2.P1<35, I4.P2<40, I5.P1<50, I1.P2<45",
     ]
@@ -275,8 +278,9 @@ if frontier_one:
         ax.scatter([knee[0]], [knee[1]], marker="*", s=220,
                    color="black", label="Knee point", zorder=5)
     ax.set_xlabel("One-way objective (s)")
-    ax.set_ylabel("Phase loss (s)")
-    ax.set_title("One-way Pareto Frontier: Objective vs Phase Loss (win2=0.10, win3=0.05)")
+    ax.set_ylabel("Intersection loss (s)")
+    ax.set_title("One-way Pareto Frontier: Objective vs Intersection Loss "
+                 "(win2=0.10, win3=0.05)")
     ax.grid(alpha=0.3)
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()

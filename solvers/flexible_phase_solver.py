@@ -9,7 +9,8 @@
     mU_i / mD_i      圈数
 
 相位生成绿灯窗，绿灯窗约束基础段带宽，BandModel 负责窗口带格，
-ObjectiveConfig 负责目标，损失系统负责 total_loss。
+ObjectiveConfig 负责 band_score 主目标，
+band_loss 与 intersection_loss 分别回填到 Solution。
 
 PhaseTuneSolver 是薄包装器：根据 mode 生成 ObjectiveConfig，
 然后把所有参数原样转给 FlexiblePhaseTuneSolver。

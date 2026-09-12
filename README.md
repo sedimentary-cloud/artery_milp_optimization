@@ -292,7 +292,7 @@ intersection_loss = 相位 hinge + 软 LinearSpec slack
 
 ```text
 max 主目标
-s.t. total_loss <= eps
+s.t. intersection_loss <= eps
 ```
 
 ## 7. 损失项

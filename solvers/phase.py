@@ -18,7 +18,8 @@
        loss = slope * max(0, threshold - g)
               + upper_slope * max(0, g - upper_threshold)
    - 可指定 intersection，只惩罚某个路口的相位；
-   - 所有损失最终汇入 PhaseTuneSolver 的 total_phase_loss。
+   - 相位 hinge / 软约束汇入 intersection_loss；
+     AlignmentLossBuilder 的 alignment 进入 band_loss。
 
 3. LinearSpec / ConstraintBuilder
    - 声明相位变量的线性硬约束 / 软约束；

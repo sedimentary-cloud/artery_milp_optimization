@@ -41,8 +41,9 @@
        ObjectiveConfig 里的 SumGroup / BalanceGroup 统一翻译成 c 向量。
 7. 损失系统：
        PhaseLossBuilder 的 hinge loss、LinearSpec 软约束 slack、
-       AlignmentLossBuilder 的对齐损失统一汇入 total_loss；
-       EpsilonConstraintRunner 再做 max 主目标 s.t. total_loss <= eps。
+       AlignmentLossBuilder 的对齐损失进入 band_loss；
+       EpsilonConstraintRunner 再做
+           max band_score s.t. intersection_loss <= eps。
 
 代码组织说明：
 - 变量在一条一维向量 x 中排列，idx_* 保存各变量块的起始下标。
