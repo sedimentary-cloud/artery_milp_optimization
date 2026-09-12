@@ -345,3 +345,111 @@ plot_time_space(
 )
 print()
 print("有对齐损失时空图已保存到 case_10_alignment_loss.png")
+
+
+print("=" * 70)
+print("11) 仅一阶段 vs 两阶段：band_objective-band_loss Pareto 前沿")
+# 本案例只输出 Pareto 图，不输出时空图。
+# 对比口径：
+#   x = band_loss        （越小越好）
+#   y = band_objective   （越大越好）
+# 一阶段：只调 t/b/B/方案窗口，不调相位 g。
+# 两阶段：先跑同一 λ 的一阶段，再用其结果作为 prior 调相位 g。
+
+band_loss_weights = [0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+
+stage1_band_solver = CompositeBandSolver(down_weight=1.0)
+stage2_phase_solver = PhaseTuneSolver(mode="global", down_weight=1.0)
+
+stage1_points = []
+stage2_points = []
+
+for lam in band_loss_weights:
+    # 仅一阶段
+    s1 = stage1_band_solver.solve(
+        arterial,
+        alignment_builder=alignment_builder,
+        band_loss_weight=lam,
+    )
+    if s1.status == "optimal":
+        stage1_points.append((float(s1.band_loss),
+                              float(s1.band_objective),
+                              lam, "stage1", s1))
+
+    # 两阶段：Stage 1 用同一 λ，Stage 2 在 Stage 1 结果上调相位
+    s2 = stage2_phase_solver.solve(
+        arterial,
+        prior=s1,
+        alignment_builder=alignment_builder,
+        band_loss_weight=lam,
+    )
+    if s2.status == "optimal":
+        stage2_points.append((float(s2.band_loss),
+                              float(s2.band_objective),
+                              lam, "stage2", s2))
+
+
+def _nondominated(points):
+    """返回非支配点：band_loss 越小、band_objective 越大越好。"""
+    front = []
+    for p in points:
+        dominated = False
+        for q in points:
+            if q is p:
+                continue
+            no_worse = q[0] <= p[0] + 1e-9 and q[1] >= p[1] - 1e-9
+            strictly_better = q[0] < p[0] - 1e-9 or q[1] > p[1] + 1e-9
+            if no_worse and strictly_better:
+                dominated = True
+                break
+        if not dominated:
+            front.append(p)
+    # 去重，按 band_loss 升序
+    unique = {}
+    for p in front:
+        key = (round(p[0], 6), round(p[1], 6))
+        unique[key] = p
+    return sorted(unique.values(), key=lambda t: (t[0], -t[1]))
+
+
+front_s1 = _nondominated(stage1_points)
+front_s2 = _nondominated(stage2_points)
+
+print("  一阶段 Pareto 点：")
+print("    λ      band_loss   band_objective")
+for loss, obj, lam, _, _ in front_s1:
+    print(f"    {lam:>5.2f}  {loss:>10.2f}  {obj:>14.2f}")
+
+print("  两阶段 Pareto 点：")
+print("    λ      band_loss   band_objective")
+for loss, obj, lam, _, _ in front_s2:
+    print(f"    {lam:>5.2f}  {loss:>10.2f}  {obj:>14.2f}")
+
+fig, ax = plt.subplots(figsize=(9, 5.5))
+for label, front, color, marker in [
+    ("Stage 1 only", front_s1, "#d95f02", "o"),
+    ("Two-stage (Stage 1 + phase tuning)", front_s2, "#1b9e77", "s"),
+]:
+    if not front:
+        continue
+    xs = [p[0] for p in front]
+    ys = [p[1] for p in front]
+    ax.plot(xs, ys, marker=marker, linewidth=2.0, markersize=7,
+            label=label, color=color)
+    for loss, obj, lam, _, _ in front:
+        ax.annotate(f"λ={lam:g}", (loss, obj),
+                    textcoords="offset points", xytext=(6, 6),
+                    fontsize=8, color=color)
+
+ax.set_xlabel("Band loss (s)")
+ax.set_ylabel("Band objective")
+ax.set_title("Case 11: Stage 1 only vs Two-stage Pareto Front")
+ax.grid(alpha=0.3)
+ax.legend(loc="best", fontsize=9)
+fig.tight_layout()
+fig.savefig("case_11_stage1_vs_stage2_pareto.png", dpi=150)
+plt.close(fig)
+
+print()
+print("仅一阶段 vs 两阶段 Pareto 图已保存到 "
+      "case_11_stage1_vs_stage2_pareto.png")
