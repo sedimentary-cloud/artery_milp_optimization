@@ -119,7 +119,8 @@ show("balanced", s_bal, "case_02_balanced.png",
 print("=" * 70)
 print("3) 上行优先 + 下行窗口加权（OneWayPrioritySolver）")
 s_one = OneWayPrioritySolver(up_weight=1.0,
-                             window_weights={2: 1.0, 3: 0.5}).solve(arterial)
+                             window_weights={2: 1.0, 3: 0.5},
+                             n_intersections=len(names)).solve(arterial)
 show("one-way", s_one, "case_03_oneway.png",
      notes=["Objective: up-priority + down window bands",
             "window_weights: win2=1.0, win3=0.5"])
@@ -225,6 +226,7 @@ print("9) one-way 帕累托前沿：window_weights={2:0.1, 3:0.05}")
 s_one_low = OneWayPrioritySolver(
     up_weight=1.0,
     window_weights={2: 0.1, 3: 0.05},
+    n_intersections=len(names),
 ).solve(arterial)
 show("one-way-low-window-weight", s_one_low, "case_09_oneway_stage1.png",
      notes=["OneWayPrioritySolver",

@@ -24,9 +24,15 @@ class FlexibleBandSolver(Solver):
 
     def __init__(self,
                  config: ObjectiveConfig,
-                 max_loops: int = 3) -> None:
+                 max_loops: int = 3,
+                 name: str = "flexible-band",
+                 up_style: str = "global",
+                 down_style: str = "global") -> None:
         self.config = config
         self.max_loops = max_loops
+        self.name = name
+        self.up_style = up_style
+        self.down_style = down_style
 
     def solve(self, arterial: Arterial) -> Solution:
         C = arterial.cycle
@@ -184,6 +190,8 @@ class FlexibleBandSolver(Solver):
                    integrality=integrality)
 
         sol = Solution(cycle=C, solver_msg=f"HiGHS via scipy: success={res.success}")
+        sol.band_up_style = self.up_style
+        sol.band_down_style = self.down_style
         if res.x is None:
             sol.status = "infeasible"
             return sol
@@ -266,3 +274,37 @@ def oneway_config(up_weight: float = 1.0,
         for j in range(1, n_intersections - 1):
             terms[f"down.win3@I{j}-I{j+2}"] = w3
     return ObjectiveConfig(sum_groups=[SumGroup(terms)])
+
+
+def make_composite_solver(down_weight: float = 1.0,
+                          up_weight: float = 1.0,
+                          max_loops: int = 3,
+                          max_window: int = 3,
+                          objective_mode: str = "sum",
+                          balance_eps: float = 0.1,
+                          balance_terms: tuple[str, ...] = ("up", "down")) -> FlexibleBandSolver:
+    """旧 CompositeBandSolver 的薄工厂。"""
+    cfg = composite_config(up_weight=up_weight,
+                           down_weight=down_weight,
+                           objective_mode=objective_mode,
+                           balance_eps=balance_eps,
+                           balance_terms=balance_terms)
+    return FlexibleBandSolver(cfg, max_loops=max_loops,
+                              name="composite-band",
+                              up_style="global", down_style="global")
+
+
+def make_oneway_solver(up_weight: float = 1.0,
+                       window_weights: dict[int, float] | None = None,
+                       segment_down_weights: dict[str, float] | None = None,
+                       max_loops: int = 3,
+                       n_intersections: int | None = None) -> FlexibleBandSolver:
+    """旧 OneWayPrioritySolver 的薄工厂。"""
+    n = n_intersections or 0
+    cfg = oneway_config(up_weight=up_weight,
+                        window_weights=window_weights,
+                        segment_down_weights=segment_down_weights,
+                        n_intersections=n)
+    return FlexibleBandSolver(cfg, max_loops=max_loops,
+                              name="one-way-priority",
+                              up_style="global", down_style="local")

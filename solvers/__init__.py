@@ -1,8 +1,10 @@
 from .base import Solver
-from .milp import (CompositeBandSolver, MaxBandMILPSolver,
-                    OneWayPrioritySolver)
+from .milp import MaxBandMILPSolver
 from .flexible_band_solver import (FlexibleBandSolver, composite_config,
-                                  oneway_config)
+                                  oneway_config, make_composite_solver,
+                                  make_oneway_solver)
+CompositeBandSolver = make_composite_solver
+OneWayPrioritySolver = make_oneway_solver
 from .phase import (AlignmentLossBuilder, ConstraintBuilder, LinearSpec,
                     PhaseLossBuilder, PhaseLossSpec)
 from .staged import EpsilonConstraintRunner, PhaseTuneSolver, TwoStageSolver
