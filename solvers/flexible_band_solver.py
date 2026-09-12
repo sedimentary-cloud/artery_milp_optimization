@@ -424,28 +424,55 @@ def composite_config(up_weight: float = 1.0,                 # 上行全局带�
 
 
 def oneway_config(up_weight: float = 1.0,                        # 上行全局带权重
-                  window_weights: dict[int, float] | None = None,  # 窗口权重：{2: w2, 3: w3}
-                  segment_down_weights: dict[str, float] | None = None,  # 下行逐段权重
-                  n_intersections: int = 0) -> ObjectiveConfig:    # 路口数量，用于展开所有段/窗口
-    """OneWayPrioritySolver 的预设目标配置（下行分段 + 窗口带）。
+                  window_weights: dict[int, float] | None = None,  # 任意窗口权重：{k: w_k}
+                  segment_down_weights: dict[str, float] | None = None,  # 下行逐段权重（可选）
+                  n_intersections: int = 0) -> ObjectiveConfig:    # 路口数量
+    """OneWayPrioritySolver 的预设目标配置（下行分段 + 任意窗口带）。
+
+    参数：
+        up_weight: 上行全局带 b_up_global 的权重；
+        window_weights: 下行窗口权重字典：
+            {2: w2}          -> 只奖励每个下行路段；
+            {2: w2, 3: w3}   -> 再奖励每个下行三路口窗口；
+            {2: w2, 3: w3, 4: w4, ...} -> 支持任意 k <= n；
+            如果不写 2，默认 w2 = 1.0；
+        segment_down_weights: 下行逐段权重，优先级高于 window_weights[2]；
+            例如 {"seg1": 2.0, "seg3": 0.5}；
+        n_intersections: 路口数量 n，用于展开所有 k 窗口。
 
     生成目标：
         max up_weight * b_up_global
           + Σ 下行每段权重 * b_down_seg
-          + Σ 下行三窗口权重 * B_down_win3
+          + Σ_k w_k * 所有下行 k 窗口带
     """
-    ww = window_weights or {2: 1.0}                              # 默认 k=2 窗口权重为 1.0
-    seg_weights = dict(segment_down_weights or {})               # 复制一份逐段权重，避免修改原字典
-    terms: dict[str, float] = {"up.global": up_weight}           # 目标项先放上行全局带
+    ww = dict(window_weights or {})                              # 复制窗口权重，避免修改原字典
+    if not ww:                                                   # 如果没有提供任何窗口权重
+        ww = {2: 1.0}                                            # 默认只奖励下行每个路段
 
+    seg_weights = dict(segment_down_weights or {})               # 复制逐段权重
+    terms: dict[str, float] = {"up.global": up_weight}           # 先放上行全局带
+
+    # k=2：每个下行路段。即使 ww 里没有 2，也用默认权重 1.0。
+    w2 = ww.get(2, 1.0)                                          # k=2 的默认权重
     for i in range(n_intersections - 1):                         # 遍历所有相邻路口段
-        seg_name = f"seg{i+1}"                                   # 生成 seg1, seg2, ...
-        terms[f"down.{seg_name}"] = seg_weights.get(seg_name, ww.get(2, 1.0))  # 下行该段权重
+        seg_name = f"seg{i+1}"                                   # seg1, seg2, ...
+        terms[f"down.{seg_name}"] = seg_weights.get(seg_name, w2)  # 该段权重
 
-    w3 = ww.get(3, 0.0)                                          # 取 k=3 窗口的权重
-    if w3 > 0:                                                   # 只有正权重才需要加入目标
-        for j in range(1, n_intersections - 1):                  # 遍历所有三路口窗口
-            terms[f"down.win3@I{j}-I{j+2}"] = w3                 # 加入下行三窗口带
+    # k>=3：任意窗口大小。
+    for k, weight in ww.items():                                 # 遍历用户配置的每个 k
+        if k == 2:                                               # k=2 已在上面处理
+            continue
+        if k < 2 or k > n_intersections:                         # 越界窗口直接报错
+            raise ValueError(
+                f"oneway_config: 非法窗口大小 k={k}, "
+                f"要求 2 <= k <= {n_intersections}"
+            )
+        if weight <= 0:                                          # 非正权重不加入目标
+            continue
+        for start1 in range(1, n_intersections - k + 2):         # 起点路口编号从 I1 开始
+            end1 = start1 + k - 1                                # 终点路口编号
+            key = f"down.win{k}@I{start1}-I{end1}"               # 例如 down.win4@I1-I4
+            terms[key] = weight                                  # 加入该窗口带
 
     return ObjectiveConfig(sum_groups=[SumGroup(terms)])         # 所有项放进一个 SumGroup
 
