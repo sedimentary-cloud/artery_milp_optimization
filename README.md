@@ -257,6 +257,14 @@ FlexibleBandSolver(
 - 方案/窗口联合选择；
 - `ObjectiveConfig` 目标。
 
+求解结束后会从最终带宽结果后处理回填：
+
+- 两个方向；
+- `k=2..5` 的窗口绿波带；
+- key 形如 `up.win3@I1-I3` / `down.win3@I1-I3`。
+
+回填只写入 `Solution.window_bands`，不修改优化变量或目标值。
+
 ### 6.4 PhaseTuneSolver
 
 完整走 `FlexiblePhaseTuneSolver`：

@@ -42,7 +42,7 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 from ..models import Arterial
 from ..solution import Solution
-from .band_model import BandModel
+from .band_model import BandModel, fill_solution_window_bands
 from .base import Solver
 from .objective_config import BalanceGroup, ObjectiveConfig, SumGroup
 
@@ -466,6 +466,10 @@ class FlexibleBandSolver(Solver):
             sol.bandwidth_down = {seg_names[i]: float(x[idx_bD + i]) for i in range(m)}
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
+
+        # 后处理：从最终逐路段/全局带宽重新计算窗口绿波带。
+        # 这不修改任何优化变量或目标值，只填充 Solution.window_bands。
+        fill_solution_window_bands(sol, arterial, max_window=5)
 
         # 回填绿波带层损失和目标值。
         band_loss = 0.0

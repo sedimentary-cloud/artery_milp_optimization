@@ -26,7 +26,10 @@ GLOBAL_DOWN_COLOR = "#3880ed"
 
 WINDOW_BAND_ALPHA = 0.05
 WINDOW_BAND_ZORDER = 1.1
-WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR  # 与全局下行带同色
+# 兼容旧名字：没有方向信息的窗口 key 默认按下行处理。
+WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
+WINDOW_UP_COLOR = GLOBAL_UP_COLOR
+WINDOW_DOWN_COLOR = GLOBAL_DOWN_COLOR
 
 
 def _positions(arterial: Arterial) -> list[float]:
@@ -207,8 +210,10 @@ def plot_time_space(arterial: Arterial,
         handles.append(Patch(facecolor=GLOBAL_DOWN_COLOR, alpha=GLOBAL_BAND_ALPHA,
                              label="Down Band"))
     if has_window_bands:
-        handles.append(Patch(facecolor=WINDOW_BAND_COLOR, alpha=WINDOW_BAND_ALPHA,
-                             label="Window Bands"))
+        handles.append(Patch(facecolor=WINDOW_UP_COLOR, alpha=WINDOW_BAND_ALPHA,
+                             label="Window Bands (Up)"))
+        handles.append(Patch(facecolor=WINDOW_DOWN_COLOR, alpha=WINDOW_BAND_ALPHA,
+                             label="Window Bands (Down)"))
     ax.legend(handles=handles, loc="lower right", fontsize=9)
 
     # --- 绿波带 ---
@@ -264,21 +269,32 @@ def plot_time_space(arterial: Arterial,
         # 图层 2：窗口绿波带（win2 两两路口、win3 三个一组……）
         # ============================================================
         if has_window_bands:
-            grouped: dict[int, list[tuple[int, float]]] = {}
+            # 按方向 + 窗口大小分组；up 用 tU，down 用 tD。
+            grouped: dict[str, dict[int, list[tuple[int, float]]]] = {
+                "up": {},
+                "down": {},
+            }
             for key, bw in solution.window_bands.items():
-                k, j = _parse_window_key(key, names)
-                if k is not None and k <= max_band_window and bw > 0:
-                    grouped.setdefault(k, []).append((j, bw))
-            for k in sorted(grouped, reverse=True):
-                for j, bw in grouped[k]:
-                    ts = [tD[j + i] for i in range(k)]
-                    ps = [pos[j + i] for i in range(k)]
-                    for kk in range(band_k_min, k_max + 1):
-                        t_shifted = [t + kk * C for t in ts]
-                        ax.add_patch(_poly_band(ps, t_shifted, bw,
-                                                facecolor=WINDOW_BAND_COLOR,
-                                                alpha=WINDOW_BAND_ALPHA,
-                                                zorder=WINDOW_BAND_ZORDER))
+                direction, k, j = _parse_window_key(key, names)
+                if (direction in grouped and k is not None
+                        and k <= max_band_window and bw > 0):
+                    grouped[direction].setdefault(k, []).append((j, bw))
+
+            for direction in ("up", "down"):
+                t_series = tU if direction == "up" else tD
+                color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
+                for k in sorted(grouped[direction], reverse=True):
+                    for j, bw in grouped[direction][k]:
+                        ts = [t_series[j + i] for i in range(k)]
+                        ps = [pos[j + i] for i in range(k)]
+                        for kk in range(band_k_min, k_max + 1):
+                            t_shifted = [t + kk * C for t in ts]
+                            ax.add_patch(_poly_band(
+                                ps, t_shifted, bw,
+                                facecolor=color,
+                                alpha=WINDOW_BAND_ALPHA,
+                                zorder=WINDOW_BAND_ZORDER,
+                            ))
 
     ax.set_xlim(t_min, t_max)
     ax.set_ylim(-0.05 * pos[-1], 1.05 * pos[-1])
@@ -331,12 +347,29 @@ def _poly_band(pos: list[float], t: list[float], b: float, **kw) -> Polygon:
     return Polygon(verts, closed=True, **kw)
 
 
-def _parse_window_key(key: str, names: list[str]) -> tuple[int | None, int | None]:
-    """解析 "win3@B-D" -> (3, 起点路口下标)。解析失败返回 (None, None)。"""
+def _parse_window_key(key: str, names: list[str]) -> tuple[str | None, int | None, int | None]:
+    """解析窗口带 key。
+
+    新格式：
+        "up.win3@I1-I3"   -> ("up", 3, 0)
+        "down.win2@I1-I2" -> ("down", 2, 0)
+
+    兼容旧格式：
+        "win3@I1-I3"      -> ("down", 3, 0)
+
+    解析失败返回 (None, None, None)。
+    """
     try:
-        k_str, rng = key.split("@")
+        prefix, rng = key.split("@")
+        # 新格式带方向前缀；旧格式没有方向，默认按下行处理。
+        if "." in prefix:
+            direction, k_str = prefix.split(".", 1)
+        else:
+            direction, k_str = "down", prefix
+        if direction not in ("up", "down"):
+            return None, None, None
         k = int(k_str.replace("win", ""))
         first = rng.split("-")[0]
-        return k, names.index(first)
+        return direction, k, names.index(first)
     except (ValueError, IndexError):
-        return None, None
+        return None, None, None

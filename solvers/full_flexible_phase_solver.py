@@ -58,7 +58,7 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 from ..models import Arterial
 from ..solution import Solution
-from .band_model import BandModel
+from .band_model import BandModel, fill_solution_window_bands
 from .base import Solver
 from .objective_config import ObjectiveConfig, parse_band_key
 from .phase import (ConstraintBuilder, LinearExpr, LinearSpec,
@@ -771,19 +771,9 @@ class FullFlexiblePhaseTuneSolver(Solver):
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
 
-        # one-way / local 模式下，把 ObjectiveConfig 里引用到的下行窗口带
-        # 回填给绘图模块。key 采用 "winK@起点-终点" 格式，例如 win3@I1-I3。
-        if self.down_style == "local":
-            for band in self.config.all_band_keys(n):
-                # 只回填“下行、非全局”的窗口带；全局带由 bandwidth_down 负责。
-                if band.direction != "down" or band.k >= n:
-                    continue
-                j0 = band.start
-                j1 = band.start + band.k - 1
-                wkey = f"win{band.k}@{int_names[j0]}-{int_names[j1]}"
-                sol.window_bands[wkey] = float(
-                    x[band_offset + band_model.var_of(band)]
-                )
+        # 后处理：不修改优化变量，直接从最终带宽结果重新计算
+        # 两个方向、k=2..5 的窗口绿波带，供 plot 绘制。
+        fill_solution_window_bands(sol, arterial, max_window=5)
 
         # ------------------------- 两类损失回填 -------------------------
         # 1) 绿波带层损失：band_loss。

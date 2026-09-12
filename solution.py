@@ -31,7 +31,8 @@ class Solution:
     # 带子在各路口的起始时刻（秒，mod 周期），绘制时空图用
     band_start_up: dict[str, float] = field(default_factory=dict)
     band_start_down: dict[str, float] = field(default_factory=dict)
-    # 窗口带宽：key 形如 "win3@B-D"，value 为该相邻路口组的公共带宽（秒）
+    # 窗口带宽：key 形如 "up.win3@I1-I3" / "down.win3@I1-I3"，
+    # value 为该相邻路口组的公共带宽（秒）。
     window_bands: dict[str, float] = field(default_factory=dict)
     # 相位时长：路口名 -> 相位名 -> 秒（第二阶段优化后回填）
     phase_times: dict[str, dict[str, float]] = field(default_factory=dict)

@@ -145,3 +145,54 @@ def _parse_band_key_from_str(text: str, n: int) -> BandKey:
         k=_parse_k_from_key(text, n),
         start=_parse_start_from_key(text, n),
     )
+
+
+def fill_solution_window_bands(solution,
+                               arterial,
+                               max_window: int = 5,
+                               clear: bool = True) -> None:
+    """从最终 Solution 的逐路段带宽重新计算并回填窗口绿波带。
+
+    该函数只做后处理，不修改任何优化变量、目标值或带宽结果。
+
+    计算方式：
+        对每个方向 d、窗口大小 k、起点 j：
+            B[d,k,j] = min(
+                sol.bandwidth_up/down[seg_j],
+                ...,
+                sol.bandwidth_up/down[seg_{j+k-2}],
+            )
+
+    Args:
+        solution: 已求解的 Solution。
+        arterial: 对应干线，用于拿路口名和路段名。
+        max_window: 最大窗口大小，默认 5。
+        clear: 是否先清空 solution.window_bands，默认 True。
+    """
+    int_names = [v.name for v in arterial.intersection_order]
+    seg_names = [s.name for s in arterial.segment_order]
+    n = len(int_names)
+
+    if clear:
+        solution.window_bands.clear()
+
+    for direction, bandwidth in (("up", solution.bandwidth_up),
+                                 ("down", solution.bandwidth_down)):
+        if not bandwidth:
+            continue
+
+        # k = 2..min(max_window, n)
+        for k in range(2, min(max_window, n) + 1):
+            for j in range(0, n - k + 1):
+                seg_slice = seg_names[j:j + k - 1]
+                values = [float(bandwidth.get(name, 0.0))
+                          for name in seg_slice]
+                if not values:
+                    continue
+                bw = min(values)
+                key = (f"{direction}.win{k}@"
+                       f"{int_names[j]}-{int_names[j + k - 1]}")
+                solution.window_bands[key] = float(bw)
+
+
+__all__ = ["BandModel", "fill_solution_window_bands"]
