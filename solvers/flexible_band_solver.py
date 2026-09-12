@@ -94,7 +94,7 @@ class FlexibleBandSolver(Solver):
         #   用整数 m 记录“少算/多算”了几个周期。
         #
         # B[d, k, j]:
-        #   从第 j 个路口开始、连续 k 个路口的窗口带宽度。
+        #   对 d 方向而言从第 j 个路口开始、连续 k 个路口的窗口带宽度。
         #   k=2 就是一段路；k=n 就是整条干线。
         #
         # δ:
@@ -193,9 +193,20 @@ class FlexibleBandSolver(Solver):
         for row in idx_opt:
             ub[row] = 1.0
 
+        # integrality[j] 告诉求解器第 j 个变量是什么类型：
+        #   0 -> 连续变量，可以是小数；
+        #   1 -> 整数变量，只能取整数。
+        # 这里先把所有变量都看成连续的。
         integrality = np.zeros(nvar)
+
+        # mU_0..mU_{m-1} 和 mD_0..mD_{m-1} 是“跨了几个周期”的圈数，
+        # 必须是整数。例如 m=-1 表示往回减一个周期，m=0 表示不跨周期。
         integrality[idx_mU:idx_mU + m] = 1
         integrality[idx_mD:idx_mD + m] = 1
+
+        # δ 是“方案/窗口选择开关”，只能取 0 或 1。
+        # 在 MILP 里 0-1 变量也算整数变量，所以 integrality 设为 1，
+        # 再配合 bounds 里的 0 <= δ <= 1，就变成二进制变量。
         for row in idx_opt:
             integrality[row] = 1
 
