@@ -467,7 +467,8 @@ class FlexibleBandSolver(Solver):
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
 
-        # 后处理：从最终逐路段/全局带宽重新计算窗口绿波带。
+        # 后处理：用最终带前沿 t 和最终绿灯窗，重新计算
+        # 两个方向、k=2..5 的可行窗口绿波带。
         # 这不修改任何优化变量或目标值，只填充 Solution.window_bands。
         fill_solution_window_bands(sol, arterial, max_window=5)
 

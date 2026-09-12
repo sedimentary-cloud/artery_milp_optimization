@@ -147,49 +147,153 @@ def _parse_band_key_from_str(text: str, n: int) -> BandKey:
     )
 
 
+def _widest_window(windows):
+    """返回最宽绿灯窗；没有则返回 None。"""
+    if not windows:
+        return None
+    return max(windows, key=lambda w: w.width)
+
+
+def _selected_green_windows(solution, arterial):
+    """从 Solution 中还原每个路口最终采用的上/下行绿灯窗（秒）。
+
+    优先级：
+        1. phase_times + phases：第二阶段相位优化后的窗口；
+        2. window_choices：第一阶段选中的方案窗口；
+        3. 方案里最宽的窗口。
+
+    Returns:
+        dict[路口名, {"up": (start_s, end_s), "down": (start_s, end_s)}]
+    """
+    C = arterial.cycle
+    out: dict[str, dict[str, tuple[float, float]]] = {}
+
+    for inter in arterial.intersection_order:
+        # 先锁定方案：优先用 Solution.plan_choices，否则退回第一个方案。
+        plan = inter.plans[0]
+        if solution is not None and solution.plan_choices:
+            pname = solution.plan_choices.get(inter.name)
+            if pname:
+                try:
+                    plan = inter.plan_by_name(pname)
+                except KeyError:
+                    plan = inter.plans[0]
+
+        up_win = None
+        down_win = None
+
+        # 1) 相位优化后的窗口。
+        pt = solution.phase_times.get(inter.name) if solution and solution.phase_times else None
+        if pt and plan.phases:
+            starts: dict[str, float] = {}
+            acc = 0.0
+            for ph in plan.phases:
+                starts[ph.name] = acc
+                acc += float(pt.get(ph.name, ph.green))
+            if plan.up_phase in starts and plan.up_phase in pt:
+                us = starts[plan.up_phase]
+                ue = us + float(pt[plan.up_phase])
+                up_win = (us, ue)
+            if plan.down_phase in starts and plan.down_phase in pt:
+                ds = starts[plan.down_phase]
+                de = ds + float(pt[plan.down_phase])
+                down_win = (ds, de)
+
+        # 2) 方案/窗口选择信息。
+        if (up_win is None or down_win is None) and solution and solution.window_choices:
+            wc = solution.window_choices.get(inter.name)
+            if wc:
+                try:
+                    up_idx = int(wc.get("up_window", -1))
+                    dn_idx = int(wc.get("down_window", -1))
+                    if up_win is None and 0 <= up_idx < len(plan.up_windows):
+                        w = plan.up_windows[up_idx]
+                        up_win = (w.start * C, w.end * C)
+                    if down_win is None and 0 <= dn_idx < len(plan.down_windows):
+                        w = plan.down_windows[dn_idx]
+                        down_win = (w.start * C, w.end * C)
+                except (TypeError, ValueError, KeyError):
+                    pass
+
+        # 3) 退回方案里最宽的窗口。
+        if up_win is None:
+            w = _widest_window(plan.up_windows)
+            if w is not None:
+                up_win = (w.start * C, w.end * C)
+        if down_win is None:
+            w = _widest_window(plan.down_windows)
+            if w is not None:
+                down_win = (w.start * C, w.end * C)
+
+        out[inter.name] = {
+            "up": up_win if up_win is not None else (0.0, 0.0),
+            "down": down_win if down_win is not None else (0.0, 0.0),
+        }
+
+    return out
+
+
 def fill_solution_window_bands(solution,
                                arterial,
                                max_window: int = 5,
                                clear: bool = True) -> None:
-    """从最终 Solution 的逐路段带宽重新计算并回填窗口绿波带。
+    """从最终 Solution 重新计算并回填窗口绿波带。
 
     该函数只做后处理，不修改任何优化变量、目标值或带宽结果。
 
-    计算方式：
-        对每个方向 d、窗口大小 k、起点 j：
-            B[d,k,j] = min(
-                sol.bandwidth_up/down[seg_j],
-                ...,
-                sol.bandwidth_up/down[seg_{j+k-2}],
-            )
+    与“直接取最终 bandwidth 的最小值”不同，这里利用最终解中的：
+        - band_start_up / band_start_down
+        - 最终采用的绿灯窗
+    计算在给定带前沿 t 下，窗口内各路口还剩余多少绿灯时间：
+
+        room_i = max(0, green_end_i - t_i)
+        B_feasible[d,k,j] = min(room_i)  i = j ... j+k-1
+
+    这样即使 objective="loss" 没有优化带宽，只要最终 t 落在绿灯窗内，
+    仍然能回填出局部两两路口、三路口等“可行窗口绿波带”。
 
     Args:
         solution: 已求解的 Solution。
-        arterial: 对应干线，用于拿路口名和路段名。
+        arterial: 对应干线。
         max_window: 最大窗口大小，默认 5。
         clear: 是否先清空 solution.window_bands，默认 True。
     """
     int_names = [v.name for v in arterial.intersection_order]
-    seg_names = [s.name for s in arterial.segment_order]
     n = len(int_names)
-
     if clear:
         solution.window_bands.clear()
 
-    for direction, bandwidth in (("up", solution.bandwidth_up),
-                                 ("down", solution.bandwidth_down)):
-        if not bandwidth:
+    windows = _selected_green_windows(solution, arterial)
+
+    for direction, starts in (("up", solution.band_start_up),
+                              ("down", solution.band_start_down)):
+        if not starts:
             continue
 
         # k = 2..min(max_window, n)
         for k in range(2, min(max_window, n) + 1):
             for j in range(0, n - k + 1):
-                seg_slice = seg_names[j:j + k - 1]
-                values = [float(bandwidth.get(name, 0.0))
-                          for name in seg_slice]
-                if not values:
+                rooms: list[float] = []
+                for idx in range(j, j + k):
+                    iname = int_names[idx]
+                    t = starts.get(iname)
+                    start_s, end_s = windows.get(iname, {}).get(
+                        direction, (0.0, 0.0)
+                    )
+                    if t is None:
+                        rooms = []
+                        break
+                    t = float(t)
+                    # t 必须落在当前方向的绿灯窗内；若不在，则该窗口带不可行。
+                    if t < start_s - 1e-7 or t > end_s + 1e-7:
+                        room = 0.0
+                    else:
+                        room = max(0.0, end_s - t)
+                    rooms.append(room)
+
+                if not rooms:
                     continue
-                bw = min(values)
+                bw = min(rooms)
                 key = (f"{direction}.win{k}@"
                        f"{int_names[j]}-{int_names[j + k - 1]}")
                 solution.window_bands[key] = float(bw)

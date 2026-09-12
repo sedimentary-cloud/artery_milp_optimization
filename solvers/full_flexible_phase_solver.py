@@ -771,8 +771,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
 
-        # 后处理：不修改优化变量，直接从最终带宽结果重新计算
-        # 两个方向、k=2..5 的窗口绿波带，供 plot 绘制。
+        # 后处理：不修改优化变量，用最终带前沿 t 和最终绿灯窗
+        # 重新计算两个方向、k=2..5 的可行窗口绿波带，供 plot 绘制。
         fill_solution_window_bands(sol, arterial, max_window=5)
 
         # ------------------------- 两类损失回填 -------------------------
