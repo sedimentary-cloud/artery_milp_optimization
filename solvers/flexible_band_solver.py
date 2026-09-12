@@ -130,30 +130,44 @@ class FlexibleBandSolver(Solver):
         idx_bD = 2 * n + 3 * m      # b_down_0..b_down_{m-1} 紧接在 bU 后面，从 2n+3m 开始，共 m 个
         cur = 2 * n + 4 * m         # 以上基础变量一共占 2n+4m 个；cur 是下一个空闲下标
 
+        # 创建窗口带格 B[d,k,j] 的变量索引表，并把它们排在基础变量之后。
         band_model = BandModel(n, m)
-        band_offset = cur
-        cur += band_model.nvar
+        band_offset = cur              # 带格变量的起始下标
+        cur += band_model.nvar         # 为所有 B 变量预留位置
 
-        # BalanceGroup 的组 min 变量
+        # 每个 BalanceGroup 需要一个“组内最小值”变量：
+        #     B_g <= 每个成员
+        # 最大化 B_g 时，它自动变成成员里的最小值。
         balance_vars: dict[int, int] = {}
         for gidx, group in enumerate(self.config.balance_groups):
             balance_vars[gidx] = cur
             cur += 1
 
-        # 方案/窗口联合选择变量 δ
+        # 每个路口一组 0-1 变量 δ，用来选择：
+        #     (方案, 上行窗口, 下行窗口)
+        # idx_opt[i] 存第 i 个路口所有选项的变量下标。
         idx_opt: list[list[int]] = []
         for i in range(n):
             idx_opt.append(list(range(cur, cur + len(options[i]))))
             cur += len(options[i])
+
+        # 到这里所有变量都排完了，nvar 是变量总数。
         nvar = cur
 
-        # 目标：scipy 默认最小化，这里 c 取负
+        # scipy.optimize.milp 默认求最小值：min c^T x。
+        # 但我们的目标是“最大化”各项，所以把系数取负：
+        #     max w*x  ==  min (-w)*x
         c = np.zeros(nvar)
+
+        # SumGroup：每个带标识直接按权重加进目标。
         for group in self.config.sum_groups:
             for key, weight in group.terms.items():
                 band = _parse_band_key(key, n)
                 var = _band_var(band_model, band, band_offset)
                 c[var] += -weight
+
+        # BalanceGroup：组 min 变量按组权重加负号；
+        # 再给每个成员加一个很小的 ε 托底项，避免均衡达标后其他带摆烂。
         for gidx, group in enumerate(self.config.balance_groups):
             gvar = balance_vars[gidx]
             c[gvar] += -group.weight
