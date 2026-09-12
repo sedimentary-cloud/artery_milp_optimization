@@ -213,6 +213,20 @@ class FlexibleBandSolver(Solver):
         rows, lo_list, hi_list = [], [], []
 
         def add_row(coefs, lo, hi):
+            """添加一行线性约束：lo <= Σ coefs[j] * x[j] <= hi。
+
+            参数：
+                coefs: {变量下标: 系数}
+                       例如 {idx_tU+1: 1, idx_tU: -1, idx_mU: -C}
+                       表示 1*tU_{i+1} + (-1)*tU_i + (-C)*mU_i
+                lo:    这一行线性表达式的下界；
+                hi:    这一行线性表达式的上界。
+
+            用法：
+                lo == hi  -> 等式约束；
+                lo = -inf -> 只有上界的不等式；
+                hi = +inf -> 只有下界的不等式。
+            """
             row = np.zeros(nvar)
             for j, v in coefs.items():
                 row[j] = v
