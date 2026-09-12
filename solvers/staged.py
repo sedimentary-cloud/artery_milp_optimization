@@ -32,6 +32,7 @@ from .base import Solver
 from .phase import (AlignmentLossBuilder, ConstraintBuilder, LinearExpr,
                     LinearSpec, PhaseLossBuilder, PhaseLossSpec, WindowExpr,
                     expr_coefs, window_exprs)
+from .two_stage_config import TwoStageConfig
 
 
 class _LegacyPhaseTuneSolver(Solver):
@@ -494,18 +495,32 @@ class _LegacyPhaseTuneSolver(Solver):
 
 
 class TwoStageSolver(Solver):
-    """编排器：Stage1 选方案，Stage2 锁方案优化相位；失败时 fallback。"""
+    """编排器：Stage1 选方案，Stage2 锁方案优化相位；失败时 fallback。
+
+    支持两种构造方式：
+    1) 新方式：TwoStageSolver(TwoStageConfig)
+       使用统一配置对象，Stage 1 和 Stage 2 共享同一个 ObjectiveConfig。
+    2) 旧方式：TwoStageSolver(stage1, mode=..., **tune_kwargs)
+       保留兼容，内部仍按旧逻辑重建 Stage 2。
+    """
 
     name = "two-stage"
 
     def __init__(self,
-                 stage1: Solver,
+                 stage1: Solver | TwoStageConfig | None = None,
                  mode: str = "global",
                  loss_builder: PhaseLossBuilder | None = None,
                  constraint_builder: ConstraintBuilder | None = None,
                  alignment_builder: AlignmentLossBuilder | None = None,
                  band_loss_weight: float = 0.0,
+                 config: TwoStageConfig | None = None,
                  **tune_kwargs) -> None:
+        # 新 API：TwoStageSolver(config)
+        if isinstance(stage1, TwoStageConfig) and config is None:
+            config = stage1
+            stage1 = None
+
+        self.config = config
         self.stage1 = stage1
         self.mode = mode
         self.loss_builder = loss_builder
@@ -514,9 +529,69 @@ class TwoStageSolver(Solver):
         self.band_loss_weight = band_loss_weight
         self.tune_kwargs = tune_kwargs
 
+    def _solve_with_config(self, arterial) -> Solution:
+        """使用 TwoStageConfig 求解。"""
+        from .flexible_band_solver import FlexibleBandSolver
+        from .full_flexible_phase_solver import FullFlexiblePhaseTuneSolver
+
+        cfg = self.config
+        cfg.validate()
+        mode = cfg.band.mode
+
+        # Stage 1：使用统一的 band objective。
+        stage1 = FlexibleBandSolver(
+            cfg.band.objective,
+            max_loops=cfg.max_loops,
+            up_style="global",
+            down_style=("global" if mode == "global" else "local"),
+            up_global_output=True,
+            down_global_output=(mode == "global"),
+        )
+        s1 = stage1.solve(
+            arterial,
+            alignment_builder=cfg.band.alignment_builder,
+            band_loss_weight=cfg.band.band_loss_weight,
+        )
+
+        # Stage 2：继续使用同一个 ObjectiveConfig，只额外加入
+        # intersection loss。
+        try:
+            stage2 = FullFlexiblePhaseTuneSolver(
+                config=cfg.band.objective,
+                max_loops=cfg.max_loops,
+                mode=mode,
+                up_global_output=True,
+                down_global_output=(mode == "global"),
+            )
+            s2 = stage2.solve(
+                arterial,
+                prior=s1,
+                loss_builder=cfg.intersection.loss_builder,
+                constraint_builder=cfg.intersection.constraint_builder,
+                alignment_builder=cfg.band.alignment_builder,
+                band_loss_weight=cfg.band.band_loss_weight,
+                objective="bandwidth",
+            )
+            if s2.status == "optimal":
+                return s2
+        except Exception:
+            pass
+
+        s1.status = f"{s1.status}|stage1_fallback"
+        return s1
+
     def solve(self, arterial) -> Solution:
+        if self.config is not None:
+            return self._solve_with_config(arterial)
+
+        if self.stage1 is None:
+            raise ValueError(
+                "TwoStageSolver 需要 stage1 求解器或 TwoStageConfig"
+            )
+
         import inspect
 
+        # 旧 API 兼容路径。
         # Stage 1 通常才支持 alignment_builder / band_loss_weight。
         # 用签名判断而不是无条件传参，避免不兼容 stage1求解器报错。
         stage1_params = inspect.signature(self.stage1.solve).parameters
@@ -570,19 +645,39 @@ class EpsilonConstraintRunner:
                  objective_mode: str = "sum",
                  balance_eps: float = 0.1,
                  balance_terms: tuple[str, ...] = ("up", "down"),
-                 band_loss_weight: float = 0.0) -> None:
-        self.mode = mode
-        self.loss_builder = loss_builder
-        self.constraint_builder = constraint_builder
-        self.alignment_builder = alignment_builder
+                 band_loss_weight: float = 0.0,
+                 config: TwoStageConfig | None = None) -> None:
+        # 新 API：EpsilonConstraintRunner(TwoStageConfig, n_points=...)
+        if isinstance(mode, TwoStageConfig) and config is None:
+            config = mode
+            mode = config.band.mode
+
+        if config is not None:
+            config.validate()
+            self.mode = config.band.mode
+            self.loss_builder = config.intersection.loss_builder
+            self.constraint_builder = config.intersection.constraint_builder
+            self.alignment_builder = config.band.alignment_builder
+            self.band_loss_weight = config.band.band_loss_weight
+            self.max_loops = config.max_loops
+            self._objective_config = config.band.objective
+            # config 已经统一表达了 band objective，x 轴优先用 band_score。
+            if metric is None:
+                metric = "band_score"
+        else:
+            self.mode = mode
+            self.loss_builder = loss_builder
+            self.constraint_builder = constraint_builder
+            self.alignment_builder = alignment_builder
+            self.band_loss_weight = band_loss_weight
+            self.max_loops = max_loops
+            self._objective_config = None
+
         self.n_points = n_points
         self.down_weight = down_weight
         self.up_weight = up_weight
         self.window_weights = window_weights
-        self.max_loops = max_loops
-        self.band_loss_weight = band_loss_weight
         # metric: 帕累托前沿 x 轴的带宽口径。
-        # 默认由 objective_mode 自动推导，保证“优化目标”和“展示口径”同源；
         # 仅当用户确实想报告另一个指标时才手动覆盖。
         if metric is None:
             if band_loss_weight != 0.0:
@@ -602,6 +697,12 @@ class EpsilonConstraintRunner:
 
     def _make_tuner(self) -> PhaseTuneSolver:
         from .flexible_phase_solver import PhaseTuneSolver as _NewPhaseTuneSolver
+        if self._objective_config is not None:
+            return _NewPhaseTuneSolver(
+                mode=self.mode,
+                max_loops=self.max_loops,
+                objective_config=self._objective_config,
+            )
         return _NewPhaseTuneSolver(mode=self.mode,
                                down_weight=self.down_weight,
                                up_weight=self.up_weight,

@@ -99,7 +99,8 @@ class PhaseTuneSolver(Solver):
                  objective_mode: str = "sum",
                  balance_eps: float = 0.1,
                  balance_terms: tuple[str, ...] = ("up", "down"),
-                 tunable_intersections: set[str] | None = None) -> None:
+                 tunable_intersections: set[str] | None = None,
+                 objective_config: ObjectiveConfig | None = None) -> None:
         self.mode = mode
         self.down_weight = down_weight
         self.up_weight = up_weight
@@ -109,8 +110,13 @@ class PhaseTuneSolver(Solver):
         self.balance_eps = balance_eps
         self.balance_terms = tuple(balance_terms)
         self.tunable_intersections = tunable_intersections
+        # 如果外部已经构造好 ObjectiveConfig，则直接使用，避免 Stage 1/2
+        # 各自根据权重参数重新构造一份目标定义。
+        self.objective_config = objective_config
 
     def _build_config(self, arterial: Arterial) -> ObjectiveConfig:
+        if self.objective_config is not None:
+            return self.objective_config
         if self.mode == "global":
             return composite_config(
                 up_weight=self.up_weight,

@@ -27,10 +27,12 @@ import matplotlib.pyplot as plt
 from greenwave import (Arterial, GreenWindow, Intersection, Phase, Segment,
                        SignalPlan, plot_time_space)
 from greenwave.solvers import (AlignmentLossBuilder, ConstraintBuilder,
-                               EpsilonConstraintRunner, CompositeBandSolver,
-                               LinearSpec, OneWayPrioritySolver,
-                               PhaseLossBuilder, PhaseLossSpec,
-                               PhaseTuneSolver, TwoStageSolver)
+                               CompositeBandSolver, LinearSpec,
+                               OneWayPrioritySolver, PhaseLossBuilder,
+                               PhaseLossSpec, PhaseTuneSolver, TwoStageSolver,
+                               BandObjectiveConfig, IntersectionLossConfig,
+                               TwoStageConfig, composite_config,
+                               oneway_config)
 
 C = 90.0
 
@@ -174,12 +176,13 @@ show("1.3 stage1 one-way", s_1_3, "case_1_3_stage1_oneway.png",
 # ======================================================================
 print("=" * 70)
 print("2.1 双阶段 sum（TwoStageSolver）")
-s_2_1 = TwoStageSolver(
-    CompositeBandSolver(down_weight=1.0, objective_mode="sum"),
-    mode="global",
-    down_weight=1.0,
-    objective_mode="sum",
-).solve(arterial)
+cfg_2_1 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(down_weight=1.0, objective_mode="sum"),
+    ),
+)
+s_2_1 = TwoStageSolver(cfg_2_1).solve(arterial)
 show("2.1 two-stage sum", s_2_1, "case_2_1_stage2_sum.png",
      notes=["Two-stage",
             "Stage 1: max b_up + b_down",
@@ -193,17 +196,17 @@ show("2.1 two-stage sum", s_2_1, "case_2_1_stage2_sum.png",
 # ======================================================================
 print("=" * 70)
 print("2.2 双阶段 balance（TwoStageSolver, balanced_composite）")
-s_2_2 = TwoStageSolver(
-    CompositeBandSolver(
-        down_weight=1.0,
-        objective_mode="balanced_composite",
-        balance_eps=0.1,
+cfg_2_2 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(
+            down_weight=1.0,
+            objective_mode="balanced_composite",
+            balance_eps=0.1,
+        ),
     ),
-    mode="global",
-    down_weight=1.0,
-    objective_mode="balanced_composite",
-    balance_eps=0.1,
-).solve(arterial)
+)
+s_2_2 = TwoStageSolver(cfg_2_2).solve(arterial)
 show("2.2 two-stage balance", s_2_2, "case_2_2_stage2_balance.png",
      notes=["Two-stage",
             "Objective: b_up + b_down + eps * B_bal",
@@ -216,16 +219,17 @@ show("2.2 two-stage balance", s_2_2, "case_2_2_stage2_balance.png",
 # ======================================================================
 print("=" * 70)
 print("2.3 双阶段 one-way（TwoStageSolver, oneway）")
-s_2_3 = TwoStageSolver(
-    OneWayPrioritySolver(
-        up_weight=1.0,
-        window_weights={2: 1.0, 3: 0.5},
-        n_intersections=len(names),
+cfg_2_3 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="oneway",
+        objective=oneway_config(
+            up_weight=1.0,
+            window_weights={2: 1.0, 3: 0.5},
+            n_intersections=len(names),
+        ),
     ),
-    mode="oneway",
-    up_weight=1.0,
-    window_weights={2: 1.0, 3: 0.5},
-).solve(arterial)
+)
+s_2_3 = TwoStageSolver(cfg_2_3).solve(arterial)
 show("2.3 two-stage one-way", s_2_3, "case_2_3_stage2_oneway.png",
      notes=["Two-stage",
             "Objective: up-priority + down window bands",
@@ -242,13 +246,16 @@ print("3.1 双阶段 sum + 硬约束：I2.P1 >= 35")
 constraint_3_1 = ConstraintBuilder([
     LinearSpec({"I2.P1": 1.0}, sense=">=", rhs=35.0),
 ])
-s_3_1 = TwoStageSolver(
-    CompositeBandSolver(down_weight=1.0, objective_mode="sum"),
-    mode="global",
-    down_weight=1.0,
-    objective_mode="sum",
-    constraint_builder=constraint_3_1,
-).solve(arterial)
+cfg_3_1 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(down_weight=1.0, objective_mode="sum"),
+    ),
+    intersection=IntersectionLossConfig(
+        constraint_builder=constraint_3_1,
+    ),
+)
+s_3_1 = TwoStageSolver(cfg_3_1).solve(arterial)
 show("3.1 two-stage sum + min green", s_3_1,
      "case_3_1_stage2_sum_min_green.png",
      notes=["Two-stage sum",
@@ -274,14 +281,15 @@ alignment_builder_3_2 = AlignmentLossBuilder(
 )
 print("=" * 70)
 print("3.2 双阶段 sum + alignment loss 权重=10")
-s_3_2 = TwoStageSolver(
-    CompositeBandSolver(down_weight=1.0, objective_mode="sum"),
-    mode="global",
-    down_weight=1.0,
-    objective_mode="sum",
-    alignment_builder=alignment_builder_3_2,
-    band_loss_weight=10.0,
-).solve(arterial)
+cfg_3_2 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(down_weight=1.0, objective_mode="sum"),
+        alignment_builder=alignment_builder_3_2,
+        band_loss_weight=10.0,
+    ),
+)
+s_3_2 = TwoStageSolver(cfg_3_2).solve(arterial)
 show("3.2 two-stage sum + alignment weight", s_3_2,
      "case_3_2_stage2_sum_align_weight.png",
      notes=["Two-stage sum",
@@ -298,13 +306,16 @@ print("3.3 双阶段 sum + 硬约束：I2.P1 + I2.P2 <= 70")
 constraint_3_3 = ConstraintBuilder([
     LinearSpec({"I2.P1": 1.0, "I2.P2": 1.0}, sense="<=", rhs=70.0),
 ])
-s_3_3 = TwoStageSolver(
-    CompositeBandSolver(down_weight=1.0, objective_mode="sum"),
-    mode="global",
-    down_weight=1.0,
-    objective_mode="sum",
-    constraint_builder=constraint_3_3,
-).solve(arterial)
+cfg_3_3 = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(down_weight=1.0, objective_mode="sum"),
+    ),
+    intersection=IntersectionLossConfig(
+        constraint_builder=constraint_3_3,
+    ),
+)
+s_3_3 = TwoStageSolver(cfg_3_3).solve(arterial)
 show("3.3 two-stage sum + max phase sum", s_3_3,
      "case_3_3_stage2_sum_max_phase_sum.png",
      notes=["Two-stage sum",
@@ -322,9 +333,9 @@ print("4.1 单阶段 vs 双阶段 Pareto：band_objective vs intersection_loss")
 
 loss_builder_4_1 = PhaseLossBuilder([
     PhaseLossSpec("P1", threshold=35.0, slope=2.0, intersection="I2"),
-    PhaseLossSpec("P2", threshold=40.0, slope=2.0, intersection="I4"),
-    PhaseLossSpec("P1", threshold=50.0, slope=2.0, intersection="I5"),
-    PhaseLossSpec("P2", threshold=45.0, slope=2.0, intersection="I1"),
+    PhaseLossSpec("P2", threshold=40.0, slope=1.0, intersection="I4"),
+    PhaseLossSpec("P1", threshold=50.0, slope=2.5, intersection="I5"),
+    PhaseLossSpec("P2", threshold=45.0, slope=3.0, intersection="I1"),
 ])
 
 # 单阶段固定相位：不调 g，只优化带宽和带前沿。

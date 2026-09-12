@@ -286,12 +286,43 @@ intersection_loss = 相位 hinge + 软 LinearSpec slack
 `alignment_builder` 属于绿波带层损失，通过 `band_loss_weight`
 以加权和形式进入 `band_score`，不再混进 `intersection_loss`。
 
-### 6.5 EpsilonConstraintRunner
+### 6.5 TwoStageConfig 统一配置
+
+Stage 1 和 Stage 2 不再重复输入带宽权重、objective_mode、window_weights。
+
+```python
+cfg = TwoStageConfig(
+    band=BandObjectiveConfig(
+        mode="global",
+        objective=composite_config(down_weight=1.0, objective_mode="sum"),
+        alignment_builder=alignment_builder,
+        band_loss_weight=10.0,
+    ),
+    intersection=IntersectionLossConfig(
+        loss_builder=loss_builder,
+        constraint_builder=constraint_builder,
+    ),
+)
+
+s = TwoStageSolver(cfg).solve(arterial)
+```
+
+其中：
+
+```text
+band
+    -> band_objective / band_loss / band_score
+
+intersection
+    -> phase hinge + soft LinearSpec slack
+```
+
+### 6.6 EpsilonConstraintRunner
 
 ε-约束法扫描帕累托前沿：
 
 ```text
-max 主目标
+max band_score
 s.t. intersection_loss <= eps
 ```
 
