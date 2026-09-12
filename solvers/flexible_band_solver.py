@@ -558,7 +558,8 @@ def composite_config(up_weight: float = 1.0,                 # 上行全局带�
 def oneway_config(up_weight: float = 1.0,                        # 上行全局带权重
                   window_weights: dict[int, float] | None = None,  # 任意窗口权重：{k: w_k}
                   segment_down_weights: dict[str, float] | None = None,  # 下行逐段权重（可选）
-                  n_intersections: int = 0) -> ObjectiveConfig:    # 路口数量
+                  n_intersections: int = 0,                      # 路口数量
+                  normalize_window_weights: bool = True) -> ObjectiveConfig:
     """OneWayPrioritySolver 的预设目标配置（下行分段 + 任意窗口带）。
 
     参数：
@@ -571,11 +572,22 @@ def oneway_config(up_weight: float = 1.0,                        # 上行全局�
         segment_down_weights: 下行逐段权重，优先级高于 window_weights[2]；
             例如 {"seg1": 2.0, "seg3": 0.5}；
         n_intersections: 路口数量 n，用于展开所有 k 窗口。
+        normalize_window_weights:
+            是否按窗口数量归一化权重；默认 True。
+
+            对窗口大小 k，内部每个窗口权重变为：
+                w_k / (n - k + 1)
+
+            这样“所有 k 窗口带的总权重”约为 w_k，
+            不再随路口数量 n 线性放大。
 
     生成目标：
         max up_weight * b_up_global
           + Σ 下行每段权重 * b_down_seg
           + Σ_k w_k * 所有下行 k 窗口带
+
+    若 normalize_window_weights=True，则最后一行内部实际为：
+        Σ_k (w_k / 窗口数) * 所有 k 窗口带
     """
     ww = dict(window_weights or {})                              # 复制窗口权重，避免修改原字典
     if not ww:                                                   # 如果没有提供任何窗口权重
@@ -585,10 +597,19 @@ def oneway_config(up_weight: float = 1.0,                        # 上行全局�
     terms: dict[str, float] = {"up.global": up_weight}           # 先放上行全局带
 
     # k=2：每个下行路段。即使 ww 里没有 2，也用默认权重 1.0。
+    # 局部段数量 = n-1，若开启归一化，则每个默认段权重除以 n-1。
     w2 = ww.get(2, 1.0)                                          # k=2 的默认权重
-    for i in range(n_intersections - 1):                         # 遍历所有相邻路口段
+    n_seg = n_intersections - 1
+    for i in range(n_seg):                                       # 遍历所有相邻路口段
         seg_name = f"seg{i+1}"                                   # seg1, seg2, ...
-        terms[f"down.{seg_name}"] = seg_weights.get(seg_name, w2)  # 该段权重
+        if seg_name in seg_weights:
+            # 显式逐段权重：用户自己指定，不再按数量缩放。
+            terms[f"down.{seg_name}"] = seg_weights[seg_name]
+        else:
+            seg_weight = w2
+            if normalize_window_weights and n_seg > 0:
+                seg_weight = w2 / n_seg
+            terms[f"down.{seg_name}"] = seg_weight
 
     # k>=3：任意窗口大小。
     for k, weight in ww.items():                                 # 遍历用户配置的每个 k
@@ -601,10 +622,16 @@ def oneway_config(up_weight: float = 1.0,                        # 上行全局�
             )
         if weight <= 0:                                          # 非正权重不加入目标
             continue
+
+        n_windows = n_intersections - k + 1                      # 该 k 的窗口数量
+        effective_weight = weight
+        if normalize_window_weights and n_windows > 0:
+            effective_weight = weight / n_windows
+
         for start1 in range(1, n_intersections - k + 2):         # 起点路口编号从 I1 开始
             end1 = start1 + k - 1                                # 终点路口编号
             key = f"down.win{k}@I{start1}-I{end1}"               # 例如 down.win4@I1-I4
-            terms[key] = weight                                  # 加入该窗口带
+            terms[key] = effective_weight                        # 加入归一化后的窗口权重
 
     return ObjectiveConfig(sum_groups=[SumGroup(terms)])         # 所有项放进一个 SumGroup
 
@@ -632,13 +659,15 @@ def make_oneway_solver(up_weight: float = 1.0,
                        window_weights: dict[int, float] | None = None,
                        segment_down_weights: dict[str, float] | None = None,
                        max_loops: int = 3,
-                       n_intersections: int | None = None) -> FlexibleBandSolver:
+                       n_intersections: int | None = None,
+                       normalize_window_weights: bool = True) -> FlexibleBandSolver:
     """旧 OneWayPrioritySolver 的薄工厂。"""
     n = n_intersections or 0
     cfg = oneway_config(up_weight=up_weight,
                         window_weights=window_weights,
                         segment_down_weights=segment_down_weights,
-                        n_intersections=n)
+                        n_intersections=n,
+                        normalize_window_weights=normalize_window_weights)
     return FlexibleBandSolver(cfg, max_loops=max_loops,
                               name="one-way-priority",
                               up_style="global", down_style="local",

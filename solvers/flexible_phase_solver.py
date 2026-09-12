@@ -100,7 +100,8 @@ class PhaseTuneSolver(Solver):
                  balance_eps: float = 0.1,
                  balance_terms: tuple[str, ...] = ("up", "down"),
                  tunable_intersections: set[str] | None = None,
-                 objective_config: ObjectiveConfig | None = None) -> None:
+                 objective_config: ObjectiveConfig | None = None,
+                 normalize_window_weights: bool = True) -> None:
         self.mode = mode
         self.down_weight = down_weight
         self.up_weight = up_weight
@@ -110,6 +111,7 @@ class PhaseTuneSolver(Solver):
         self.balance_eps = balance_eps
         self.balance_terms = tuple(balance_terms)
         self.tunable_intersections = tunable_intersections
+        self.normalize_window_weights = normalize_window_weights
         # 如果外部已经构造好 ObjectiveConfig，则直接使用，避免 Stage 1/2
         # 各自根据权重参数重新构造一份目标定义。
         self.objective_config = objective_config
@@ -130,6 +132,7 @@ class PhaseTuneSolver(Solver):
                 up_weight=self.up_weight,
                 window_weights=self.window_weights,
                 n_intersections=len(arterial.intersection_order),
+                normalize_window_weights=self.normalize_window_weights,
             )
         raise ValueError(f"unknown mode: {self.mode}")
 
