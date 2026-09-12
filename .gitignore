@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.mplconfig/
+conda-envs/
+conda-pkgs/
+*.png
