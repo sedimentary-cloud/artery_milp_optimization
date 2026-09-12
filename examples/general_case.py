@@ -348,49 +348,91 @@ print("有对齐损失时空图已保存到 case_10_alignment_loss.png")
 
 
 print("=" * 70)
-print("11) 仅一阶段 vs 两阶段：band_objective-band_loss Pareto 前沿")
+print("11) 仅一阶段 vs 两阶段 Pareto：band_score vs intersection_loss")
 # 本案例只输出 Pareto 图，不输出时空图。
-# 对比口径：
-#   x = band_loss        （越小越好）
-#   y = band_objective   （越大越好）
-# 一阶段：只调 t/b/B/方案窗口，不调相位 g。
-# 两阶段：先跑同一 λ 的一阶段，再用其结果作为 prior 调相位 g。
+#
+# 两个目标：
+#   第一目标（绿波带层）：band_score，越大越好
+#   第二目标（交叉口层）：intersection_loss，越小越好
+#
+# 仅在 g 可调时，第二阶段才能改变 intersection_loss。
+# 因此“仅一阶段”在固定相位下只能得到单个可行点；
+# “两阶段”则通过调 g 得到 intersection_loss 与 band_score 的 Pareto 前沿。
 
-band_loss_weights = [0.0, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0]
+case11_band_loss_weight = 1.0
+case11_n_points = 10
 
-stage1_band_solver = CompositeBandSolver(down_weight=1.0)
-stage2_phase_solver = PhaseTuneSolver(mode="global", down_weight=1.0)
+# 仅一阶段：相位固定，只优化 t/b/B/alignment。
+s1_fixed = PhaseTuneSolver(
+    mode="global",
+    down_weight=1.0,
+    tunable_intersections=set(),  # 所有路口相位固定
+).solve(
+    arterial,
+    prior=s_sum,
+    loss_builder=loss_builder,
+    alignment_builder=alignment_builder,
+    band_loss_weight=case11_band_loss_weight,
+    objective="bandwidth",
+)
 
-stage1_points = []
+if s1_fixed.status == "optimal":
+    stage1_point = (float(s1_fixed.intersection_loss),
+                    float(s1_fixed.band_score),
+                    "Stage 1 only",
+                    s1_fixed)
+else:
+    stage1_point = None
+
+# 两阶段：扫描 intersection_loss 上界，最大化 band_score。
+tuner_case11 = PhaseTuneSolver(mode="global", down_weight=1.0)
+
+s_hi = tuner_case11.solve(
+    arterial,
+    prior=s_sum,
+    loss_builder=loss_builder,
+    alignment_builder=alignment_builder,
+    band_loss_weight=case11_band_loss_weight,
+    objective="bandwidth",
+)
+s_lo = tuner_case11.solve(
+    arterial,
+    prior=s_sum,
+    loss_builder=loss_builder,
+    alignment_builder=alignment_builder,
+    band_loss_weight=case11_band_loss_weight,
+    objective="loss",
+)
+
 stage2_points = []
+if s_hi.status == "optimal" and s_lo.status == "optimal":
+    L_hi = float(s_hi.intersection_loss)
+    L_lo = float(s_lo.intersection_loss)
+    if case11_n_points <= 1 or abs(L_hi - L_lo) < 1e-9:
+        eps_values = [L_lo]
+    else:
+        step = (L_hi - L_lo) / (case11_n_points - 1)
+        eps_values = [L_lo + i * step for i in range(case11_n_points)]
 
-for lam in band_loss_weights:
-    # 仅一阶段
-    s1 = stage1_band_solver.solve(
-        arterial,
-        alignment_builder=alignment_builder,
-        band_loss_weight=lam,
-    )
-    if s1.status == "optimal":
-        stage1_points.append((float(s1.band_loss),
-                              float(s1.band_objective),
-                              lam, "stage1", s1))
-
-    # 两阶段：Stage 1 用同一 λ，Stage 2 在 Stage 1 结果上调相位
-    s2 = stage2_phase_solver.solve(
-        arterial,
-        prior=s1,
-        alignment_builder=alignment_builder,
-        band_loss_weight=lam,
-    )
-    if s2.status == "optimal":
-        stage2_points.append((float(s2.band_loss),
-                              float(s2.band_objective),
-                              lam, "stage2", s2))
+    for eps in eps_values:
+        s = tuner_case11.solve(
+            arterial,
+            prior=s_sum,
+            loss_builder=loss_builder,
+            alignment_builder=alignment_builder,
+            band_loss_weight=case11_band_loss_weight,
+            max_intersection_loss=eps,
+            objective="bandwidth",
+        )
+        if s.status == "optimal":
+            stage2_points.append((float(s.intersection_loss),
+                                  float(s.band_score),
+                                  float(eps),
+                                  s))
 
 
-def _nondominated(points):
-    """返回非支配点：band_loss 越小、band_objective 越大越好。"""
+def _nondominated_case11(points):
+    """非支配：intersection_loss 越小、band_score 越大越好。"""
     front = []
     for p in points:
         dominated = False
@@ -404,45 +446,47 @@ def _nondominated(points):
                 break
         if not dominated:
             front.append(p)
-    # 去重，按 band_loss 升序
     unique = {}
     for p in front:
         key = (round(p[0], 6), round(p[1], 6))
         unique[key] = p
     return sorted(unique.values(), key=lambda t: (t[0], -t[1]))
 
+front_stage2 = _nondominated_case11(stage2_points)
 
-front_s1 = _nondominated(stage1_points)
-front_s2 = _nondominated(stage2_points)
-
-print("  一阶段 Pareto 点：")
-print("    λ      band_loss   band_objective")
-for loss, obj, lam, _, _ in front_s1:
-    print(f"    {lam:>5.2f}  {loss:>10.2f}  {obj:>14.2f}")
+print("  仅一阶段固定相位点：")
+if stage1_point is None:
+    print("    infeasible")
+else:
+    print("    intersection_loss   band_score")
+    print(f"    {stage1_point[0]:>17.2f}   {stage1_point[1]:>10.2f}")
 
 print("  两阶段 Pareto 点：")
-print("    λ      band_loss   band_objective")
-for loss, obj, lam, _, _ in front_s2:
-    print(f"    {lam:>5.2f}  {loss:>10.2f}  {obj:>14.2f}")
+print("    eps      intersection_loss   band_score")
+for loss, score, eps, _ in front_stage2:
+    print(f"    {eps:>5.2f}    {loss:>17.2f}   {score:>10.2f}")
 
 fig, ax = plt.subplots(figsize=(9, 5.5))
-for label, front, color, marker in [
-    ("Stage 1 only", front_s1, "#d95f02", "o"),
-    ("Two-stage (Stage 1 + phase tuning)", front_s2, "#1b9e77", "s"),
-]:
-    if not front:
-        continue
-    xs = [p[0] for p in front]
-    ys = [p[1] for p in front]
-    ax.plot(xs, ys, marker=marker, linewidth=2.0, markersize=7,
-            label=label, color=color)
-    for loss, obj, lam, _, _ in front:
-        ax.annotate(f"λ={lam:g}", (loss, obj),
-                    textcoords="offset points", xytext=(6, 6),
-                    fontsize=8, color=color)
+if stage1_point is not None:
+    ax.scatter([stage1_point[0]], [stage1_point[1]],
+               marker="*", s=260, color="#d95f02",
+               label="Stage 1 only (fixed phases)", zorder=4)
+    ax.annotate("Stage 1 only", (stage1_point[0], stage1_point[1]),
+                textcoords="offset points", xytext=(8, 8),
+                fontsize=9, color="#d95f02")
 
-ax.set_xlabel("Band loss (s)")
-ax.set_ylabel("Band objective")
+if front_stage2:
+    xs = [p[0] for p in front_stage2]
+    ys = [p[1] for p in front_stage2]
+    ax.plot(xs, ys, marker="o", linewidth=2.0, markersize=7,
+            color="#1b9e77", label="Two-stage Pareto front", zorder=3)
+    for loss, score, eps, _ in front_stage2:
+        ax.annotate(f"eps={eps:.1f}", (loss, score),
+                    textcoords="offset points", xytext=(6, -12),
+                    fontsize=8, color="#1b9e77")
+
+ax.set_xlabel("Intersection loss")
+ax.set_ylabel("Band score")
 ax.set_title("Case 11: Stage 1 only vs Two-stage Pareto Front")
 ax.grid(alpha=0.3)
 ax.legend(loc="best", fontsize=9)
