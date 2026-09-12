@@ -31,6 +31,7 @@ from .flexible_band_solver import (FlexibleBandSolver, composite_config,
                                   oneway_config)
 from .objective_config import ObjectiveConfig
 from .staged import _LegacyPhaseTuneSolver
+from .full_flexible_phase_solver import FullFlexiblePhaseTuneSolver
 
 
 class FlexiblePhaseTuneSolver(Solver):
@@ -262,12 +263,10 @@ class PhaseTuneSolver(Solver):
         else:
             raise ValueError(f"unknown mode: {self.mode}")
 
-        solver = FlexiblePhaseTuneSolver(
+        solver = FullFlexiblePhaseTuneSolver(
             config=cfg,
-            mode=self.mode,
-            down_weight=self.down_weight,
-            up_weight=self.up_weight,
-            window_weights=self.window_weights,
             max_loops=self.max_loops,
+            up_global_output=True,
+            down_global_output=(self.mode == "global"),
         )
         return solver.solve(arterial, prior=prior)
