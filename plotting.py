@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 from matplotlib.patches import Polygon, Rectangle
 from matplotlib.ticker import MultipleLocator
 
@@ -30,6 +31,16 @@ WINDOW_BAND_ZORDER = 1.1
 WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
 WINDOW_UP_COLOR = GLOBAL_UP_COLOR
 WINDOW_DOWN_COLOR = GLOBAL_DOWN_COLOR
+# 窗口绿波带使用不同方向的条纹，避免只靠颜色区分。
+WINDOW_UP_HATCH = r"////"
+WINDOW_DOWN_HATCH = r"\\\\"
+WINDOW_BAND_LINEWIDTH = 0.25
+
+
+def _window_facecolor(color: str) -> tuple[float, float, float, float]:
+    """窗口带面颜色：保留低透明度，但让 hatch 边线保持不透明。"""
+    r, g, b, _ = to_rgba(color)
+    return (r, g, b, WINDOW_BAND_ALPHA)
 
 
 def _positions(arterial: Arterial) -> list[float]:
@@ -210,10 +221,20 @@ def plot_time_space(arterial: Arterial,
         handles.append(Patch(facecolor=GLOBAL_DOWN_COLOR, alpha=GLOBAL_BAND_ALPHA,
                              label="Down Band"))
     if has_window_bands:
-        handles.append(Patch(facecolor=WINDOW_UP_COLOR, alpha=WINDOW_BAND_ALPHA,
-                             label="Window Bands (Up)"))
-        handles.append(Patch(facecolor=WINDOW_DOWN_COLOR, alpha=WINDOW_BAND_ALPHA,
-                             label="Window Bands (Down)"))
+        handles.append(Patch(
+            facecolor=_window_facecolor(WINDOW_UP_COLOR),
+            edgecolor=WINDOW_UP_COLOR,
+            hatch=WINDOW_UP_HATCH,
+            linewidth=WINDOW_BAND_LINEWIDTH,
+            label="Window Bands (Up)",
+        ))
+        handles.append(Patch(
+            facecolor=_window_facecolor(WINDOW_DOWN_COLOR),
+            edgecolor=WINDOW_DOWN_COLOR,
+            hatch=WINDOW_DOWN_HATCH,
+            linewidth=WINDOW_BAND_LINEWIDTH,
+            label="Window Bands (Down)",
+        ))
     ax.legend(handles=handles, loc="lower right", fontsize=9)
 
     # --- 绿波带 ---
@@ -283,6 +304,8 @@ def plot_time_space(arterial: Arterial,
             for direction in ("up", "down"):
                 t_series = tU if direction == "up" else tD
                 color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
+                hatch = (WINDOW_UP_HATCH if direction == "up"
+                         else WINDOW_DOWN_HATCH)
                 for k in sorted(grouped[direction], reverse=True):
                     for j, bw in grouped[direction][k]:
                         ts = [t_series[j + i] for i in range(k)]
@@ -291,8 +314,10 @@ def plot_time_space(arterial: Arterial,
                             t_shifted = [t + kk * C for t in ts]
                             ax.add_patch(_poly_band(
                                 ps, t_shifted, bw,
-                                facecolor=color,
-                                alpha=WINDOW_BAND_ALPHA,
+                                facecolor=_window_facecolor(color),
+                                edgecolor=color,
+                                linewidth=WINDOW_BAND_LINEWIDTH,
+                                hatch=hatch,
                                 zorder=WINDOW_BAND_ZORDER,
                             ))
 
