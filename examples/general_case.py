@@ -321,69 +321,27 @@ plot_time_space(
            "Band may sit at the edge of green windows"],
 )
 
-runner_align = EpsilonConstraintRunner(
-    mode="global",
+s_align = PhaseTuneSolver(mode="global", down_weight=1.0).solve(
+    arterial,
+    prior=s_sum,
     alignment_builder=alignment_builder,
-    n_points=10,
-    down_weight=1.0,
+    max_loss=0.0,          # 只要求对齐损失为 0，不做帕累托扫描
+    objective="bandwidth",
 )
-frontier_align = runner_align.run(arterial, prior=s_sum)
 
-# 取第一个前沿点：eps=0，即最小对齐损失
-s_align_best = frontier_align[0][3]
-print("  有对齐损失时（eps=0）各路口带中心：")
+print("  有对齐损失优化后各路口带中心：")
 print(f"  {'路口':<4}{'目标中心':>10}{'对齐中心':>12}")
 for n in names:
     a = up_center_target[n]
-    c_al = s_align_best.band_start_up[n] + 0.5 * s_align_best.bandwidth_up["seg1"]
+    c_al = s_align.band_start_up[n] + 0.5 * s_align.bandwidth_up["seg1"]
     c_al = c_al % C
     print(f"  {n:<4}{a:>10.2f}{c_al:>12.2f}")
 
 plot_time_space(
-    arterial, s_align_best,
-    save_path="case_10_alignment_best.png",
-    notes=["Alignment loss = 0 (eps=0)",
+    arterial, s_align,
+    save_path="case_10_alignment_loss.png",
+    notes=["Alignment loss <= 0",
            "Band center is pulled toward arrival peak"],
 )
-
-print("  idx  eps      sum_bandwidth   alignment_loss   time-space png")
-for idx, (eps, b, loss, sol) in enumerate(frontier_align, start=1):
-    png = f"case_10_alignment_ts_{idx:02d}.png"
-    print(f"  {idx:>3}  {eps:6.2f}   {b:6.2f}    {loss:6.2f}   {png}")
-    notes = [
-        f"Alignment Pareto point {idx}: eps={eps:.2f}s, loss={loss:.2f}s",
-        "Alignment loss = |band_center - arrival_center| - 5s",
-        "Soft penalty = 1.0 / s",
-    ]
-    plot_time_space(arterial, sol, save_path=png, notes=notes)
-
-if frontier_align:
-    objectives = [b for _, b, _, _ in frontier_align]
-    losses = [loss for _, _, loss, _ in frontier_align]
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    ax.plot(objectives, losses, marker="o", linewidth=2,
-            label="Alignment Pareto frontier", zorder=3)
-    ax.scatter([objectives[0]], [losses[0]], marker="s", s=80,
-               color="green", label="Min alignment loss", zorder=4)
-    ax.scatter([objectives[-1]], [losses[-1]], marker="s", s=80,
-               color="red", label="Max bandwidth", zorder=4)
-    for idx, (eps, obj, loss, _) in enumerate(frontier_align, start=1):
-        ax.annotate(str(idx), (obj, loss),
-                    textcoords="offset points", xytext=(7, 7),
-                    fontsize=9, fontweight="bold",
-                    bbox=dict(boxstyle="round,pad=0.2",
-                              facecolor="white", edgecolor="gray", alpha=0.8),
-                    zorder=6)
-    knee = runner_align.knee_point()
-    if knee is not None:
-        ax.scatter([knee[0]], [knee[1]], marker="*", s=220,
-                   color="black", label="Knee point", zorder=5)
-    ax.set_xlabel("Sum bandwidth b_up + b_down (s)")
-    ax.set_ylabel("Alignment loss (s)")
-    ax.set_title("Pareto Frontier: Bandwidth vs Alignment Loss")
-    ax.grid(alpha=0.3)
-    ax.legend(loc="best", fontsize=9)
-    fig.tight_layout()
-    fig.savefig("case_10_alignment_frontier.png", dpi=150)
-    print()
-    print("对齐损失帕累托前沿图已保存到 case_10_alignment_frontier.png")
+print()
+print("有对齐损失时空图已保存到 case_10_alignment_loss.png")
