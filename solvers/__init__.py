@@ -7,11 +7,13 @@ CompositeBandSolver = make_composite_solver
 OneWayPrioritySolver = make_oneway_solver
 from .phase import (AlignmentLossBuilder, ConstraintBuilder, LinearSpec,
                     PhaseLossBuilder, PhaseLossSpec)
-from .staged import EpsilonConstraintRunner, PhaseTuneSolver, TwoStageSolver
+from .staged import EpsilonConstraintRunner, TwoStageSolver
+from .flexible_phase_solver import FlexiblePhaseTuneSolver, PhaseTuneSolver
 
 __all__ = ["Solver", "CompositeBandSolver",
            "MaxBandMILPSolver",
            "OneWayPrioritySolver", "PhaseTuneSolver", "TwoStageSolver",
            "EpsilonConstraintRunner", "PhaseLossBuilder", "PhaseLossSpec",
            "ConstraintBuilder", "LinearSpec", "AlignmentLossBuilder",
-           "FlexibleBandSolver", "composite_config", "oneway_config"]
+           "FlexibleBandSolver", "composite_config", "oneway_config",
+           "FlexiblePhaseTuneSolver"]

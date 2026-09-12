@@ -27,12 +27,18 @@ class FlexibleBandSolver(Solver):
                  max_loops: int = 3,
                  name: str = "flexible-band",
                  up_style: str = "global",
-                 down_style: str = "global") -> None:
+                 down_style: str = "global",
+                 up_global_output: bool = False,
+                 down_global_output: bool = False) -> None:
         self.config = config
         self.max_loops = max_loops
         self.name = name
         self.up_style = up_style
         self.down_style = down_style
+        # 输出兼容：若为 True，则 Solution.bandwidth_* 填全局带值，
+        # 而不是逐路段基础带宽。
+        self.up_global_output = up_global_output
+        self.down_global_output = down_global_output
 
     def solve(self, arterial: Arterial) -> Solution:
         C = arterial.cycle
@@ -200,8 +206,17 @@ class FlexibleBandSolver(Solver):
         seg_names = [s.name for s in segs]
         int_names = [v.name for v in ints]
         sol.objective = -float(res.fun)
-        sol.bandwidth_up = {seg_names[i]: float(x[idx_bU + i]) for i in range(m)}
-        sol.bandwidth_down = {seg_names[i]: float(x[idx_bD + i]) for i in range(m)}
+        if self.up_global_output:
+            b_up_global = float(x[band_offset + band_model.B_idx["up"][n][0]])
+            sol.bandwidth_up = {name: b_up_global for name in seg_names}
+        else:
+            sol.bandwidth_up = {seg_names[i]: float(x[idx_bU + i]) for i in range(m)}
+
+        if self.down_global_output:
+            b_down_global = float(x[band_offset + band_model.B_idx["down"][n][0]])
+            sol.bandwidth_down = {name: b_down_global for name in seg_names}
+        else:
+            sol.bandwidth_down = {seg_names[i]: float(x[idx_bD + i]) for i in range(m)}
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
         chosen_opt: list[int] = []
@@ -291,7 +306,8 @@ def make_composite_solver(down_weight: float = 1.0,
                            balance_terms=balance_terms)
     return FlexibleBandSolver(cfg, max_loops=max_loops,
                               name="composite-band",
-                              up_style="global", down_style="global")
+                              up_style="global", down_style="global",
+                              up_global_output=True, down_global_output=True)
 
 
 def make_oneway_solver(up_weight: float = 1.0,
@@ -307,4 +323,5 @@ def make_oneway_solver(up_weight: float = 1.0,
                         n_intersections=n)
     return FlexibleBandSolver(cfg, max_loops=max_loops,
                               name="one-way-priority",
-                              up_style="global", down_style="local")
+                              up_style="global", down_style="local",
+                              up_global_output=True, down_global_output=False)
