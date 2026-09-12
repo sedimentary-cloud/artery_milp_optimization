@@ -31,10 +31,10 @@ WINDOW_BAND_ZORDER = 1.1
 WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
 WINDOW_UP_COLOR = GLOBAL_UP_COLOR
 WINDOW_DOWN_COLOR = GLOBAL_DOWN_COLOR
-# 主绿波带使用不同方向的条纹，避免只靠颜色区分。
-# 注意：这里的上下行方向与之前的窗口带方向相反。
-GLOBAL_UP_HATCH = r"\\\\"
-GLOBAL_DOWN_HATCH = r"////"
+# 主绿波带使用斑点纹理，避免只靠颜色区分。
+# 上行用密集小点，下行用圆斑，保持上下行可区分。
+GLOBAL_UP_HATCH = "..."
+GLOBAL_DOWN_HATCH = "ooo"
 BAND_HATCH_LINEWIDTH = 0.25
 
 
