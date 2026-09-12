@@ -120,13 +120,15 @@ class FlexibleBandSolver(Solver):
         # 变量在一条长向量 x 里的排列顺序。
         # 求解器 HiGHS 只认识一维向量，所以我们要记住每个变量在第几位。
         # ============================================================
-        idx_tU = 0
-        idx_mU = n
-        idx_tD = n + m
-        idx_mD = 2 * n + m
-        idx_bU = 2 * n + 2 * m
-        idx_bD = 2 * n + 3 * m
-        cur = 2 * n + 4 * m
+        # 所有变量排成一条长向量 x，下面这些 idx_* 是各变量块在 x 中的起始下标。
+        # n = 路口数量，m = 路段数量。
+        idx_tU = 0                  # tU_0..tU_{n-1} 从 0 开始，共 n 个
+        idx_mU = n                  # mU_0..mU_{m-1} 紧接在 tU 后面，从 n 开始，共 m 个
+        idx_tD = n + m              # tD_0..tD_{n-1} 紧接在 mU 后面，从 n+m 开始，共 n 个
+        idx_mD = 2 * n + m          # mD_0..mD_{m-1} 紧接在 tD 后面，从 2n+m 开始，共 m 个
+        idx_bU = 2 * n + 2 * m      # b_up_0..b_up_{m-1} 紧接在 mD 后面，从 2n+2m 开始，共 m 个
+        idx_bD = 2 * n + 3 * m      # b_down_0..b_down_{m-1} 紧接在 bU 后面，从 2n+3m 开始，共 m 个
+        cur = 2 * n + 4 * m         # 以上基础变量一共占 2n+4m 个；cur 是下一个空闲下标
 
         band_model = BandModel(n, m)
         band_offset = cur
