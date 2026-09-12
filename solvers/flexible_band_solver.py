@@ -35,15 +35,19 @@ class FlexibleBandSolver(Solver):
         n, m = len(ints), len(segs)
         self.config.validate(n)
 
-        # 取每个路口的第一个方案、第一个窗口
-        wu = []
-        wd = []
+        # 方案 × 上行窗口 × 下行窗口 联合选项
+        options: list[list[tuple[int, int, int, object, object]]] = []
         for inter in ints:
-            plan = inter.plans[0]
-            if not plan.up_windows or not plan.down_windows:
-                raise ValueError(f"路口 {inter.name} 方案 {plan.name} 缺少绿灯窗口")
-            wu.append(plan.up_windows[0])
-            wd.append(plan.down_windows[0])
+            opts = []
+            for p_idx, plan in enumerate(inter.plans):
+                if not plan.up_windows or not plan.down_windows:
+                    raise ValueError(f"路口 {inter.name} 方案 {plan.name} 缺少绿灯窗口")
+                for q, wu in enumerate(plan.up_windows):
+                    for r, wd in enumerate(plan.down_windows):
+                        opts.append((p_idx, q, r, wu, wd))
+            if not opts:
+                raise ValueError(f"路口 {inter.name} 没有可用方案/窗口")
+            options.append(opts)
 
         # 变量布局
         idx_tU = 0
@@ -63,6 +67,12 @@ class FlexibleBandSolver(Solver):
         for gidx, group in enumerate(self.config.balance_groups):
             balance_vars[gidx] = cur
             cur += 1
+
+        # 方案/窗口联合选择变量 δ
+        idx_opt: list[list[int]] = []
+        for i in range(n):
+            idx_opt.append(list(range(cur, cur + len(options[i]))))
+            cur += len(options[i])
         nvar = cur
 
         # 目标：scipy 默认最小化，这里 c 取负
@@ -94,10 +104,14 @@ class FlexibleBandSolver(Solver):
         ub[idx_bD:idx_bD + m] = C
         for gvar in balance_vars.values():
             ub[gvar] = C
+        for row in idx_opt:
+            ub[row] = 1.0
 
         integrality = np.zeros(nvar)
         integrality[idx_mU:idx_mU + m] = 1
         integrality[idx_mD:idx_mD + m] = 1
+        for row in idx_opt:
+            integrality[row] = 1
 
         rows, lo_list, hi_list = [], [], []
 
@@ -109,6 +123,10 @@ class FlexibleBandSolver(Solver):
             lo_list.append(lo)
             hi_list.append(hi)
 
+        # 方案/窗口选择：每个路口一个联合选项
+        for i in range(n):
+            add_row({idx_opt[i][o]: 1.0 for o in range(len(options[i]))}, 1.0, 1.0)
+
         # 带前沿传递
         for i, seg in enumerate(segs):
             add_row({idx_tU + i + 1: 1, idx_tU + i: -1, idx_mU + i: -C},
@@ -116,19 +134,31 @@ class FlexibleBandSolver(Solver):
             add_row({idx_tD + i: 1, idx_tD + i + 1: -1, idx_mD + i: -C},
                     seg.travel_time_down, seg.travel_time_down)
 
-        # 上行：每个路段两端窗口约束
+        # 上行：每个路段两端窗口约束，窗口边界用选中选项线性组合
         for i in range(n):
-            add_row({idx_tU + i: 1}, wu[i].start * C, np.inf)
+            up_starts = {idx_opt[i][o]: wu.start * C
+                         for o, (_, _, _, wu, _) in enumerate(options[i])}
+            add_row({idx_tU + i: -1.0, **up_starts}, -np.inf, 0.0)
         for i in range(m):
-            add_row({idx_tU + i: 1, idx_bU + i: 1}, -np.inf, wu[i].end * C)
-            add_row({idx_tU + i + 1: 1, idx_bU + i: 1}, -np.inf, wu[i + 1].end * C)
+            i0_ends = {idx_opt[i][o]: -wu.end * C
+                       for o, (_, _, _, wu, _) in enumerate(options[i])}
+            i1_ends = {idx_opt[i + 1][o]: -wu.end * C
+                       for o, (_, _, _, wu, _) in enumerate(options[i + 1])}
+            add_row({idx_tU + i: 1.0, idx_bU + i: 1.0, **i0_ends}, -np.inf, 0.0)
+            add_row({idx_tU + i + 1: 1.0, idx_bU + i: 1.0, **i1_ends}, -np.inf, 0.0)
 
         # 下行：每个路段两端窗口约束
         for i in range(n):
-            add_row({idx_tD + i: 1}, wd[i].start * C, np.inf)
+            dn_starts = {idx_opt[i][o]: wd.start * C
+                         for o, (_, _, _, _, wd) in enumerate(options[i])}
+            add_row({idx_tD + i: -1.0, **dn_starts}, -np.inf, 0.0)
         for i in range(m):
-            add_row({idx_tD + i: 1, idx_bD + i: 1}, -np.inf, wd[i].end * C)
-            add_row({idx_tD + i + 1: 1, idx_bD + i: 1}, -np.inf, wd[i + 1].end * C)
+            i0_ends = {idx_opt[i][o]: -wd.end * C
+                       for o, (_, _, _, _, wd) in enumerate(options[i])}
+            i1_ends = {idx_opt[i + 1][o]: -wd.end * C
+                       for o, (_, _, _, _, wd) in enumerate(options[i + 1])}
+            add_row({idx_tD + i: 1.0, idx_bD + i: 1.0, **i0_ends}, -np.inf, 0.0)
+            add_row({idx_tD + i + 1: 1.0, idx_bD + i: 1.0, **i1_ends}, -np.inf, 0.0)
 
         # 带格约束：B <= b
         for d in ("up", "down"):
@@ -166,11 +196,21 @@ class FlexibleBandSolver(Solver):
         sol.bandwidth_down = {seg_names[i]: float(x[idx_bD + i]) for i in range(m)}
         sol.band_start_up = {name: float(x[idx_tU + i]) for i, name in enumerate(int_names)}
         sol.band_start_down = {name: float(x[idx_tD + i]) for i, name in enumerate(int_names)}
-        sol.plan_choices = {name: ints[i].plans[0].name for i, name in enumerate(int_names)}
-        sol.window_choices = {
-            name: {"plan": ints[i].plans[0].name, "up_window": 0, "down_window": 0}
-            for i, name in enumerate(int_names)
-        }
+        chosen_opt: list[int] = []
+        for i in range(n):
+            vals = [float(x[j]) for j in idx_opt[i]]
+            chosen_opt.append(max(range(len(vals)), key=lambda o: vals[o]))
+        sol.plan_choices = {}
+        sol.window_choices = {}
+        for i, name in enumerate(int_names):
+            p_idx, q, r, _, _ = options[i][chosen_opt[i]]
+            plan = ints[i].plans[p_idx]
+            sol.plan_choices[name] = plan.name
+            sol.window_choices[name] = {
+                "plan": plan.name,
+                "up_window": q,
+                "down_window": r,
+            }
         sol.status = "optimal" if res.success else res.message
         return sol
 
