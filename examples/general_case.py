@@ -161,7 +161,7 @@ print("=" * 70)
 print("1.3 单阶段 one-way（OneWayPrioritySolver）")
 s_1_3 = OneWayPrioritySolver(
     up_weight=1.0,
-    window_weights={2: 1.0, 3: 0.5},
+    window_weights={2: 0.2, 3: 0.1},
     n_intersections=len(names),
 ).solve(arterial)
 show("1.3 stage1 one-way", s_1_3, "case_1_3_stage1_oneway.png",
@@ -224,7 +224,7 @@ cfg_2_3 = TwoStageConfig(
         mode="oneway",
         objective=oneway_config(
             up_weight=1.0,
-            window_weights={2: 1.0, 3: 0.5},
+            window_weights={2: 0.2, 3: 0.1},
             n_intersections=len(names),
         ),
     ),
@@ -380,6 +380,19 @@ s4_stage1 = PhaseTuneSolver(
     objective="bandwidth",
 )
 
+# Case 4.1 只额外输出一张单阶段时空图。
+if s4_stage1.status == "optimal":
+    show(
+        "4.1 stage1 only",
+        s4_stage1,
+        "case_4_1_stage1_time_space.png",
+        notes=[
+            "Case 4.1: Stage 1 only",
+            "Phases fixed",
+            "Only band objective optimized",
+        ],
+    )
+
 # 双阶段：扫描 intersection_loss 上界，最大化 band_objective。
 tuner_4_1 = PhaseTuneSolver(mode="global", down_weight=1.0)
 s4_hi = tuner_4_1.solve(
@@ -459,9 +472,9 @@ else:
           f"{s4_stage1.band_objective:>13.2f}")
 
 print("  双阶段 Pareto 点：")
-print("    eps      intersection_loss   band_objective")
-for loss, obj, eps, _ in front_4_1:
-    print(f"    {eps:>5.2f}    {loss:>17.2f}   {obj:>13.2f}")
+print("    idx   eps      intersection_loss   band_objective")
+for idx, (loss, obj, eps, _) in enumerate(front_4_1, start=1):
+    print(f"    {idx:>3}   {eps:>5.2f}    {loss:>17.2f}   {obj:>13.2f}")
 
 fig, ax = plt.subplots(figsize=(9, 5.5))
 if s4_stage1.status == "optimal":
@@ -472,10 +485,10 @@ if s4_stage1.status == "optimal":
         label="Stage 1 only (fixed phases)", zorder=4,
     )
     ax.annotate(
-        "Stage 1 only",
+        "S1",
         (s4_stage1.intersection_loss, s4_stage1.band_objective),
         textcoords="offset points", xytext=(8, 8),
-        fontsize=9, color="#d95f02",
+        fontsize=11, fontweight="bold", color="#d95f02",
     )
 
 if front_4_1:
@@ -483,10 +496,10 @@ if front_4_1:
     ys = [p[1] for p in front_4_1]
     ax.plot(xs, ys, marker="o", linewidth=2.0, markersize=7,
             color="#1b9e77", label="Two-stage Pareto front", zorder=3)
-    for loss, obj, eps, _ in front_4_1:
-        ax.annotate(f"eps={eps:.1f}", (loss, obj),
-                    textcoords="offset points", xytext=(6, -12),
-                    fontsize=8, color="#1b9e77")
+    for idx, (loss, obj, eps, _) in enumerate(front_4_1, start=1):
+        ax.annotate(f"{idx}", (loss, obj),
+                    textcoords="offset points", xytext=(7, -12),
+                    fontsize=10, fontweight="bold", color="#1b9e77")
 
 ax.set_xlabel("Intersection loss")
 ax.set_ylabel("Band objective")
@@ -500,3 +513,5 @@ plt.close(fig)
 print()
 print("Case 4.1 Pareto 图已保存到 "
       "case_4_1_intersection_loss_pareto.png")
+print("Case 4.1 单阶段时空图已保存到 "
+      "case_4_1_stage1_time_space.png")
