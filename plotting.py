@@ -126,6 +126,11 @@ def _draw_window_bands(ax,
 
     for direction in ("up", "down"):
         color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
+        # 如果该方向已经有正宽度的全局 band，就跳过 k==n 的本地全走廊带，
+        # 避免和全局带重复；如果全局带为零，则允许用本地全走廊带补位。
+        has_positive_global = any(
+            float(v) > 1e-9 for v in solution.multi_bandwidths.get(direction, {}).values()
+        )
         ordered_entries = sorted(
             grouped[direction],
             key=lambda entry: (
@@ -139,7 +144,9 @@ def _draw_window_bands(ax,
             if not intersections:
                 continue
             k = len(intersections)
-            if k < 2 or k > max_band_window or k >= len(names):
+            if k < 2 or k > max_band_window:
+                continue
+            if k >= len(names) and has_positive_global:
                 continue
             bw = float(entry.get("bandwidth", 0.0))
             if bw <= 0:

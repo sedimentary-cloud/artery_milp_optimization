@@ -40,6 +40,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from artery_milp import plot_pareto_frontier, plot_time_space
+from artery_milp.models import SignalLoss
 from artery_milp.solution import Solution
 from artery_milp.solvers.core import (BandMarginConfig, ObjectiveConfig,
                                       build_objective_config)
@@ -55,6 +56,36 @@ from artery_milp.examples.window_band_ranges_case import (
 )
 
 OUTPUT_DIR = Path(__file__).resolve().parent
+
+
+def build_comparison_arterial():
+    """返回对比实验使用的干线。
+
+    直接复用 ``window_band_ranges_case.py`` 的案例，但额外给 I4 baseline
+    增加两个软损失，用于在 ε-约束扫描中产生更多中间损失水平。
+    这样 4.1 的 Pareto 前沿不会退化成只有两个端点。
+    """
+    arterial = build_window_range_case()
+    i4_plan = arterial.intersections["I4"].plans[0]
+    i4_plan.signal_losses.extend([
+        SignalLoss(
+            terms={"up.1.start": 1.0},
+            lower_threshold=0.39,
+            upper_threshold=0.43,
+            lower_slope=1.0,
+            upper_slope=1.0,
+            name="I4 up.1.start 软区间（对比实验用）",
+        ),
+        SignalLoss(
+            terms={"down.1.start": 1.0},
+            lower_threshold=0.19,
+            upper_threshold=0.23,
+            lower_slope=1.0,
+            upper_slope=1.0,
+            name="I4 down.1.start 软区间（对比实验用）",
+        ),
+    ])
+    return arterial
 
 
 def objective_global_sum() -> ObjectiveConfig:
@@ -80,7 +111,7 @@ def objective_oneway_down_low() -> ObjectiveConfig:
     return build_objective_config(
         mode="oneway",
         up_weight=1.0,
-        window_weights={2: 0.2, 3: 0.1},
+        window_weights={2: 0.05, 3: 0.02},
         n_intersections=4,
         normalize_window_weights=False,
     )
@@ -151,7 +182,7 @@ def main() -> None:
     for old_path in OUTPUT_DIR.glob("compare_*.png"):
         old_path.unlink()
 
-    arterial = build_window_range_case()
+    arterial = build_comparison_arterial()
     margin = build_margin()
 
     objective_specs = [
@@ -208,11 +239,12 @@ def main() -> None:
 
     runner = EpsilonConstraintRunner(
         config=config_4,
-        n_points=5,
+        n_points=20,
         metric="sum",
     )
     prior_for_pareto = iterative_results["global_sum"]  # 3.1 迭代稳定解
     frontier = runner.run(arterial, prior_for_pareto)
+    print(f"4.1 Pareto 前沿点数: {len(frontier)}")
 
     ax = plot_pareto_frontier(
         frontier,

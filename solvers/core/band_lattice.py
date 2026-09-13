@@ -278,6 +278,210 @@ def _solve_independent_window_band(direction: str,
     return float(result.x[idx_b]), t_series
 
 
+def _solve_free_window_bands(direction: str,
+                            start: int,
+                            k: int,
+                            int_names: list[str],
+                            window_sets,
+                            segs,
+                            cycle: float,
+                            max_loops: int,
+                            n_bands: int = 3,
+                            band_gap: float = 0.0) -> list[tuple[int, float, list[float], dict[str, int]]]:
+    """独立求解同一个局部子走廊上的多条 band，允许每个路口自由选窗口。
+
+    返回 ``[(band_no, bandwidth, t_series, window_choices), ...]``。
+    该函数只用于后处理和画图，不参与主 MILP 目标。
+    """
+    if n_bands <= 0:
+        return []
+
+    local_names = int_names[start:start + k]
+    if len(local_names) != k:
+        return []
+
+    options_by_offset: list[list[tuple[int, tuple[float, float]]]] = []
+    for name in local_names:
+        windows = [tuple(float(v) for v in w) for w in window_sets.get(name, {}).get(direction, [])]
+        if not windows:
+            return []
+        options_by_offset.append([(q, w) for q, w in enumerate(windows, start=1)])
+
+    local_segs = segs[start:start + k - 1]
+    if len(local_segs) != k - 1:
+        return []
+
+    r_count = int(n_bands)
+    n_t = r_count * k
+    n_m = r_count * (k - 1)
+    n_b = r_count
+    cur = n_t + n_m + n_b
+
+    y_idx: dict[tuple[int, int, int], int] = {}
+    for r in range(r_count):
+        for offset, opts in enumerate(options_by_offset):
+            for q, _window in opts:
+                y_idx[(r, offset, q)] = cur
+                cur += 1
+
+    pi_idx: dict[tuple[int, int, int], int] = {}
+    for r in range(r_count):
+        for s_local in range(r + 1, r_count):
+            for offset in range(k):
+                pi_idx[(r, s_local, offset)] = cur
+                cur += 1
+
+    nvar = cur
+    c = np.zeros(nvar)
+    for r in range(r_count):
+        c[n_t + n_m + r] = -1.0
+
+    lb = np.zeros(nvar)
+    ub = np.full(nvar, np.inf)
+
+    def t_var(r: int, offset: int) -> int:
+        return r * k + offset
+
+    def m_var(r: int, edge: int) -> int:
+        return n_t + r * (k - 1) + edge
+
+    def b_var(r: int) -> int:
+        return n_t + n_m + r
+
+    for r in range(r_count):
+        for offset in range(k):
+            ub[t_var(r, offset)] = cycle
+        for edge in range(k - 1):
+            lb[m_var(r, edge)] = -max_loops
+            ub[m_var(r, edge)] = max_loops
+        ub[b_var(r)] = cycle
+    for j in y_idx.values():
+        ub[j] = 1.0
+    for j in pi_idx.values():
+        ub[j] = 1.0
+
+    integrality = np.zeros(nvar)
+    for r in range(r_count):
+        for edge in range(k - 1):
+            integrality[m_var(r, edge)] = 1
+    for j in y_idx.values():
+        integrality[j] = 1
+    for j in pi_idx.values():
+        integrality[j] = 1
+
+    rows: list[np.ndarray] = []
+    lo_list: list[float] = []
+    hi_list: list[float] = []
+
+    def add_row(coefs: dict[int, float], lower: float, upper: float) -> None:
+        row = np.zeros(nvar)
+        for j, value in coefs.items():
+            row[j] += value
+        rows.append(row)
+        lo_list.append(lower)
+        hi_list.append(upper)
+
+    for r in range(r_count):
+        for edge_idx, seg in enumerate(local_segs):
+            if direction == "up":
+                add_row(
+                    {
+                        t_var(r, edge_idx + 1): 1.0,
+                        t_var(r, edge_idx): -1.0,
+                        m_var(r, edge_idx): -cycle,
+                    },
+                    seg.travel_time_up,
+                    seg.travel_time_up,
+                )
+            elif direction == "down":
+                add_row(
+                    {
+                        t_var(r, edge_idx): 1.0,
+                        t_var(r, edge_idx + 1): -1.0,
+                        m_var(r, edge_idx): -cycle,
+                    },
+                    seg.travel_time_down,
+                    seg.travel_time_down,
+                )
+            else:
+                raise ValueError(f"unknown direction: {direction}")
+
+        for offset, opts in enumerate(options_by_offset):
+            add_row(
+                {y_idx[(r, offset, q)]: 1.0 for q, _window in opts},
+                1.0,
+                1.0,
+            )
+            start_terms = {
+                y_idx[(r, offset, q)]: float(window[0])
+                for q, window in opts
+            }
+            end_terms = {
+                y_idx[(r, offset, q)]: -float(window[1])
+                for q, window in opts
+            }
+            add_row({t_var(r, offset): -1.0, **start_terms}, -np.inf, 0.0)
+            add_row(
+                {t_var(r, offset): 1.0, b_var(r): 1.0, **end_terms},
+                -np.inf,
+                0.0,
+            )
+
+    order_m = 2.0 * cycle
+    for r in range(r_count):
+        for s_local in range(r + 1, r_count):
+            for offset in range(k):
+                pi = pi_idx[(r, s_local, offset)]
+                add_row(
+                    {
+                        t_var(r, offset): 1.0,
+                        b_var(r): 1.0,
+                        t_var(s_local, offset): -1.0,
+                        pi: order_m,
+                    },
+                    -np.inf,
+                    order_m - band_gap,
+                )
+                add_row(
+                    {
+                        t_var(s_local, offset): 1.0,
+                        b_var(s_local): 1.0,
+                        t_var(r, offset): -1.0,
+                        pi: -order_m,
+                    },
+                    -np.inf,
+                    -band_gap,
+                )
+
+    constraints = (
+        LinearConstraint(np.array(rows), np.array(lo_list), np.array(hi_list))
+        if rows
+        else ()
+    )
+    result = milp(
+        c=c,
+        constraints=constraints,
+        bounds=Bounds(lb, ub),
+        integrality=integrality,
+    )
+    if result.x is None or not result.success:
+        return []
+
+    out: list[tuple[int, float, list[float], dict[str, int]]] = []
+    for r in range(r_count):
+        raw_times = [float(result.x[t_var(r, offset)]) for offset in range(k)]
+        t_series = unwrap_band_times(direction, raw_times, local_segs, cycle)
+        choices: dict[str, int] = {}
+        for offset, opts in enumerate(options_by_offset):
+            q_best = max(
+                opts,
+                key=lambda item: float(result.x[y_idx[(r, offset, item[0])]]),
+            )[0]
+            choices[local_names[offset]] = int(q_best)
+        out.append((r + 1, float(result.x[b_var(r)]), t_series, choices))
+    return out
+
+
 def fill_solution_local_window_band_data(solution,
                                          arterial,
                                          max_window: int = 5,
@@ -436,6 +640,14 @@ def fill_solution_missing_window_bands(solution,
     existing_keys = set(solution.window_band_ranges.keys())
     added: dict[str, float] = {}
 
+    # 从主解里推断每个方向建模了多少条 band；没有主解信息时默认 3 条。
+    band_count = 1
+    for direction_map in solution.multi_bandwidths.values():
+        if direction_map:
+            band_count = max(band_count, max(int(k) for k in direction_map.keys()))
+    if band_count <= 0:
+        band_count = 3
+
     for direction in ("up", "down"):
         for k in range(2, min(max_window, n) + 1):
             for start in range(0, n - k + 1):
@@ -443,27 +655,23 @@ def fill_solution_missing_window_bands(solution,
                 if key in existing_keys:
                     continue
 
-                segment_numbers = _available_segment_numbers(
-                    window_sets, int_names, direction, start, k
+                # 后处理局部带也使用“自由窗口分配 + 多带顺序”：
+                # 每个路口可以从当前方案的所有绿灯窗口里任选一个，
+                # 并生成多条互不重叠的局部 band。
+                solved_list = _solve_free_window_bands(
+                    direction=direction,
+                    start=start,
+                    k=k,
+                    int_names=int_names,
+                    window_sets=window_sets,
+                    segs=segs,
+                    cycle=cycle,
+                    max_loops=max_loops,
+                    n_bands=band_count,
                 )
-                for segment_no in segment_numbers:
-                    solved = _solve_independent_window_band(
-                        direction=direction,
-                        segment_no=segment_no,
-                        start=start,
-                        k=k,
-                        int_names=int_names,
-                        window_sets=window_sets,
-                        segs=segs,
-                        cycle=cycle,
-                        max_loops=max_loops,
-                    )
-                    if solved is None:
-                        continue
-
-                    bandwidth, t_series = solved
+                for band_no, bandwidth, t_series, window_choices in solved_list:
                     solution.multi_window_bands.setdefault(direction, {}).setdefault(
-                        segment_no, {}
+                        band_no, {}
                     )[key] = float(bandwidth)
                     added[key] = added.get(key, 0.0) + float(bandwidth)
 
@@ -473,8 +681,8 @@ def fill_solution_missing_window_bands(solution,
                     used_names = int_names[start:start + k]
                     entry = {
                         "direction": direction,
-                        "band_no": segment_no,
-                        "segment_no": segment_no,
+                        "band_no": band_no,
+                        "segment_no": None,
                         "bandwidth": float(bandwidth),
                         "intersections": used_names,
                         "time_min": min(t_series) if t_series else 0.0,
@@ -489,7 +697,7 @@ def fill_solution_missing_window_bands(solution,
                         "window_choices": {
                             name: {
                                 "plan": solution.plan_choices.get(name, ""),
-                                "window": int(segment_no),
+                                "window": int(window_choices[name]),
                             }
                             for name in used_names
                         },
