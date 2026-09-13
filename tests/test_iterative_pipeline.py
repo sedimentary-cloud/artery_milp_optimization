@@ -94,7 +94,7 @@ class IterativePipelineLogicTests(unittest.TestCase):
         self.assertIn("iterative_converged", result.status)
         self.assertEqual(len(solver.history), 2)
 
-    def test_window_assignment_cycle_returns_cycle_first_solution(self):
+    def test_window_assignment_cycle_returns_predecessor_of_repeated_state(self):
         first = fake_solution(window_i2=1)
         second = fake_solution(window_i2=2)
         third = fake_solution(window_i2=1)
@@ -103,9 +103,29 @@ class IterativePipelineLogicTests(unittest.TestCase):
             solver = IterativeTwoStageSolver(self.make_config(), max_iterations=5)
             result = solver.solve(make_arterial())
 
-        self.assertIs(result, first)
+        # A -> B -> A：重复状态是 A，返回它前一轮的 B。
+        self.assertIs(result, second)
         self.assertIn("iterative_cycle", result.status)
         self.assertEqual(len(solver.history), 3)
+
+    def test_longer_window_assignment_cycle_returns_state_before_repeat(self):
+        first = fake_solution(window_i2=1)
+        second = fake_solution(window_i2=2)
+        third = fake_solution(window_i2=3)
+        fourth = fake_solution(window_i2=2)
+        with patch.object(SegmentedBandSolver, "solve", return_value=first), \
+             patch.object(
+                 FullFlexiblePhaseTuneSolver,
+                 "solve",
+                 side_effect=[first, second, third, fourth],
+             ):
+            solver = IterativeTwoStageSolver(self.make_config(), max_iterations=5)
+            result = solver.solve(make_arterial())
+
+        # A -> B -> C -> B：重复状态是 B，返回它前一轮的 C。
+        self.assertIs(result, third)
+        self.assertIn("iterative_cycle", result.status)
+        self.assertEqual(len(solver.history), 4)
 
     def test_stage2_failure_raises(self):
         first = fake_solution(window_i2=1)

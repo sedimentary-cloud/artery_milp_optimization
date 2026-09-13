@@ -1038,7 +1038,7 @@ Stage 1 选窗口 -> Stage 2 调端点 -> 把调后的窗口写回 Stage 1 -> �
 收敛判据只检查窗口分配：
 
 - 连续两轮窗口分配相同 -> 返回最新解，`status` 追加 `|iterative_converged`；
-- 窗口分配进入循环，例如 A -> B -> A -> B -> ... -> 返回循环中第一个解，`status` 追加 `|iterative_cycle`；
+- 窗口分配进入循环时，返回“重复状态出现前一轮”的解：A -> B -> A 返回 B，A -> B -> C -> B 返回 C，`status` 追加 `|iterative_cycle`；
 - 达到 `max_iterations` 仍未收敛 -> 返回最后解，`status` 追加 `|iterative_max_iter`；
 - 每轮 Stage 2 必须成功，否则抛出 `RuntimeError`。
 

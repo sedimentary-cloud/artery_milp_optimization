@@ -7,7 +7,8 @@
 
 收敛判据只检查窗口分配：
 - 如果本轮窗口分配与上一轮相同，视为收敛；
-- 如果窗口分配进入循环（例如 A -> B -> A），返回循环中第一个解；
+- 如果窗口分配进入循环，返回“重复状态出现前一轮”的解：
+  A -> B -> A 返回 B，A -> B -> C -> B 返回 C；
 - 每轮 Stage 2 都必须返回 optimal，否则抛出 ``RuntimeError``。
 """
 
@@ -101,14 +102,14 @@ class IterativeTwoStageSolver(Solver):
                 self.history = history
                 return s2
 
-            # 窗口分配进入循环：返回循环中第一个解。
+            # 窗口分配进入循环：返回“重复状态出现前一轮”的解。
+            # 例如 A -> B -> C -> B，选择 C；A -> B -> A，选择 B。
             if state in seen_states:
-                first_index = seen_states[state]
-                result = history[first_index]
+                result = history[-2]
                 result.status = f"{result.status}|iterative_cycle"
                 result.solver_msg = (
                     f"{result.solver_msg}; oscillation cycle detected at "
-                    f"iteration {iteration}, returned cycle first solution"
+                    f"iteration {iteration}, returned predecessor of repeated state"
                 )
                 self.history = history
                 return result
