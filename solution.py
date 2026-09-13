@@ -76,11 +76,6 @@ class Solution:
         """双向带宽总和（快速评价指标）。"""
         return sum(self.bandwidth_up.values()) + sum(self.bandwidth_down.values())
 
-    def is_feasible(self) -> bool:
-        """解是否可行（占位：后续实现约束校验）。"""
-        # TODO: 校验带宽是否落在各路口绿灯窗内、相位差传递是否一致等
-        raise NotImplementedError
-
     def to_dict(self) -> dict:
         """序列化为普通字典，便于存储/展示。"""
         return {

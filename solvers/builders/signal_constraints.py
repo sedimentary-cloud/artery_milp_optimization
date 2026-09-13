@@ -6,7 +6,7 @@
 - 第二阶段求解器直接围绕这些段端点变量建模。
 
 兼容性说明：
-- 仍保留 `PhaseLossSpec / PhaseLossBuilder` 名称，作为段级损失的别名；
+- 仍保留 `PhaseLossBuilder` 名称，作为段级损失的别名；
 - 仍保留 `phase_start_times / direction_phase_name`，仅供旧图面与历史代码回退。
 """
 
@@ -116,11 +116,6 @@ def window_exprs(plan: SignalPlan, cycle: float) -> WindowExpr:
     )
 
 
-def expr_coefs(expr: LinearExpr, term_indices: list[int]) -> dict[int, float]:
-    """函数名：expr_coefs；参数：expr、term_indices；返回值：MILP 系数字典；异常：无。"""
-    return {term_indices[j]: c for j, c in expr.coefs.items()}
-
-
 @dataclass
 class SegmentLossSpec:
     """段级端点/段宽表达式的双侧软损失配置。
@@ -204,7 +199,6 @@ class SegmentLossBuilder:
         return out
 
 
-PhaseLossSpec = SegmentLossSpec
 PhaseLossBuilder = SegmentLossBuilder
 
 

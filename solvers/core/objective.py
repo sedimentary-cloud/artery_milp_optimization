@@ -238,17 +238,6 @@ class ObjectiveConfig:
                     )
                 balance_member_to_group[b] = g
 
-    def all_band_keys(self, n_intersections: int) -> set[BandKey]:
-        """返回配置中引用到的所有 BandKey。"""
-        keys: set[BandKey] = set()
-        for g in self.sum_groups:
-            for key in g.terms:
-                keys.add(parse_band_key(key, n_intersections))
-        for g in self.balance_groups:
-            for m in g.members:
-                keys.add(parse_band_key(m, n_intersections))
-        return keys
-
 
 def parse_band_key(text: str, n_intersections: int | None = None) -> BandKey:
     """解析带标识。

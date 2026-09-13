@@ -63,7 +63,6 @@ artery_milp/
     stage1/                      # 第一阶段：方案选择 + 带宽优化
     stage2/                      # 第二阶段：段端点微调 + 约束/损失
     pipeline/                    # 两阶段编排、TwoStageConfig、Pareto 扫描
-    legacy/                      # 历史实现，仅兼容参考
 ```
 
 ### 0.3 推荐导入方式
@@ -1173,7 +1172,6 @@ knee = runner.knee_point()
 | 只做 Stage 2（已有 prior） | `FullFlexiblePhaseTuneSolver` / `PhaseTuneSolver` |
 | 完整两阶段 | `TwoStageSolver(config=TwoStageConfig(...))` |
 | 带宽-损失 Pareto | `EpsilonConstraintRunner` |
-| 历史 MAXBAND 风格 | `solvers.legacy.milp.CompositeBandSolver` 等，仅兼容参考 |
 
 ---
 
@@ -1615,11 +1613,7 @@ Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个
 
 ## 附录 C：当前边界与开发约定
 
-- `solvers.legacy` 是历史实现，新代码不要依赖；
 - `FlexibleBandSolver` 保留作为兼容层，不是主路径；
-- `Solution.is_feasible()` 仍是未实现的 TODO；
-- `MaxBandMILPSolver` 是占位实现，`solve()` 会抛 `NotImplementedError`；
 - 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` / `AlignmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
 - `ObjectiveConfig` 里的 band key（如 `up.seg5`）目前由 `parse_band_key` 解析，但尚未做完整的段号边界校验，非法段号可能在后续建模阶段报错；
-- `Segment.reduced_length_*` / `reduced_speed_*` 是早期绘图辅助占位，当前主路径未使用；
 - 仓库里可能残留 Windows 的 `*:Zone.Identifier` 文件，可安全删除。

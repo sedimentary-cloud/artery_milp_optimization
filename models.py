@@ -356,28 +356,6 @@ class Segment:
     def travel_time_down(self) -> float:
         return self.length_down / self.speed_down
 
-    # ---- 约化量（用于时空图：把时间轴折算成周期数，把空间轴折算成"等效距离"） ----
-
-    def reduced_length_up(self, cycle: float) -> float:
-        """上行约化路程：行驶时间占周期数 × 一个周期在图上的单位长度。
-
-        这里定义图上 1 个周期对应 1 个单位长度，因此约化路程 = 行驶时间 / 周期。
-        """
-        return self.travel_time_up / cycle
-
-    def reduced_length_down(self, cycle: float) -> float:
-        """下行约化路程，含义同上行。"""
-        return self.travel_time_down / cycle
-
-    def reduced_speed_up(self, cycle: float) -> float:
-        """上行约化速度：时空图（x=约化路程, y=周期数）上轨迹斜率的倒数。"""
-        return self.speed_up * cycle / cycle  # 占位：约化坐标下恒为 1，保留接口
-
-    def reduced_speed_down(self, cycle: float) -> float:
-        """下行约化速度，含义同上行。"""
-        return self.speed_down * cycle / cycle
-
-
 # ---------------------------------------------------------------------------
 # 干线
 # ---------------------------------------------------------------------------
