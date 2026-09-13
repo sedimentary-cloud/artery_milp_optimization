@@ -9,7 +9,7 @@
 
 """
 
-from .builders import (AlignmentLossBuilder, ConstraintBuilder, LinearExpr,
+from .builders import (AlignmentLossBuilder, ConstraintBuilder,
                        LinearSpec, SegmentLossBuilder, SegmentLossSpec,
                        TermValidationContext, TermValidationError,
                        WindowExpr, direction_phase_name,
@@ -35,7 +35,6 @@ __all__ = [
     "parse_band_key",
     "BandModel",
     "fill_solution_window_bands",
-    "LinearExpr",
     "WindowExpr",
     "direction_phase_name",
     "phase_start_times",

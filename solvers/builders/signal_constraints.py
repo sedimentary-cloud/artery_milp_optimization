@@ -18,33 +18,20 @@ from ...models import SignalPlan
 
 
 @dataclass
-class LinearExpr:
-    """const + Σ coefs[j] * x_local[j]。"""
-
-    const: float = 0.0
-    coefs: dict[int, float] = field(default_factory=dict)
-
-
-@dataclass
 class WindowExpr:
-    """一个方案的段级绿灯窗表达式。"""
+    """一个方案的段级绿灯窗表达式。
 
-    up_windows: list[tuple[LinearExpr, LinearExpr]] = field(default_factory=list)
-    down_windows: list[tuple[LinearExpr, LinearExpr]] = field(default_factory=list)
+    只保存 Stage 2 真正需要的元信息：
+
+    - ``up_labels`` / ``down_labels``：``up.1`` / ``down.2`` 这类段标签；
+    - ``term_names``：所有段端点 term；
+    - ``term_bounds``：term -> 秒域上下界。
+    """
+
     up_labels: list[str] = field(default_factory=list)
     down_labels: list[str] = field(default_factory=list)
     term_names: list[str] = field(default_factory=list)
     term_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
-
-    @property
-    def up_phase_names(self) -> list[str]:
-        """函数名：up_phase_names；参数：无；返回值：兼容字段；异常：无。"""
-        return self.up_labels
-
-    @property
-    def down_phase_names(self) -> list[str]:
-        """函数名：down_phase_names；参数：无；返回值：兼容字段；异常：无。"""
-        return self.down_labels
 
 
 def direction_phase_name(plan: SignalPlan, direction: str) -> str:
@@ -82,33 +69,14 @@ def window_exprs(plan: SignalPlan, cycle: float) -> WindowExpr:
         )
         for term in term_names
     }
-    term_to_local = {term: idx for idx, term in enumerate(term_names)}
 
-    def make_expr(term: str) -> LinearExpr:
-        return LinearExpr(const=0.0, coefs={term_to_local[term]: 1.0})
+    up_labels = [f"up.{idx}" for idx, _window in enumerate(plan.up_segments, start=1)]
+    down_labels = [f"down.{idx}" for idx, _window in enumerate(plan.down_segments, start=1)]
 
-    up_windows: list[tuple[LinearExpr, LinearExpr]] = []
-    up_labels: list[str] = []
-    for idx, _window in enumerate(plan.up_segments, start=1):
-        start_term = f"up.{idx}.start"
-        end_term = f"up.{idx}.end"
-        up_windows.append((make_expr(start_term), make_expr(end_term)))
-        up_labels.append(f"up.{idx}")
-
-    down_windows: list[tuple[LinearExpr, LinearExpr]] = []
-    down_labels: list[str] = []
-    for idx, _window in enumerate(plan.down_segments, start=1):
-        start_term = f"down.{idx}.start"
-        end_term = f"down.{idx}.end"
-        down_windows.append((make_expr(start_term), make_expr(end_term)))
-        down_labels.append(f"down.{idx}")
-
-    if not up_windows or not down_windows:
+    if not up_labels or not down_labels:
         raise ValueError(f"方案 {plan.name} 缺少可用的段级绿区间")
 
     return WindowExpr(
-        up_windows=up_windows,
-        down_windows=down_windows,
         up_labels=up_labels,
         down_labels=down_labels,
         term_names=term_names,
