@@ -319,20 +319,23 @@ class SegmentedBandSolver(Solver):
         def resolve_band_loss_name(name: str) -> list[int]:
             """把特殊损失/约束变量名翻译成变量下标列表。
 
-            注意：下面这些特殊变量（b_up / b_down / B_bal / tU_* / tD_* /
-            bU_* / bD_*）曾经用于 LinearSpec / SegmentLossSpec 的高级接口。
-            当前版本不推荐用户直接使用这些外部构建器，因此解析逻辑只保留
-            注释，不再启用；正常求解流程不会使用这些名字。
+            带宽相关的特殊变量保留：
+            - b_up / b_down：对应方向所有全局 band 的 B 求和；
+            - bU_* / bD_*：对应方向所有全局 band 在指定物理路段上的宽度求和；
+            - B_bal：第一个 BalanceGroup 的组内最小值。
 
-            如果外部 spec 仍然写这些名字，这里会主动报错，避免静默丢约束。
+            时间相关的 tU_* / tD_* 已停用：它们过去只取第一条 band，
+            在多 band 模型下容易误导，因此只保留注释并主动报错。
             """
-            # if name == "b_up":
-            #     return [global_idx[("up", band_no)] for band_no in active_by_direction["up"]]
-            # if name == "b_down":
-            #     return [global_idx[("down", band_no)] for band_no in active_by_direction["down"]]
-            # if name == "B_bal":
-            #     gvar = balance_vars.get(0)
-            #     return [] if gvar is None else [gvar]
+            if name == "b_up":
+                return [global_idx[("up", band_no)] for band_no in active_by_direction["up"]]
+            if name == "b_down":
+                return [global_idx[("down", band_no)] for band_no in active_by_direction["down"]]
+            if name == "B_bal":
+                gvar = balance_vars.get(0)
+                return [] if gvar is None else [gvar]
+
+            # 时间相关特殊变量 tU_* / tD_* 已停用，解析逻辑保留为注释。
             # if name.startswith("tU_"):
             #     i = name_to_i.get(name[3:])
             #     if i is None or not active_by_direction["up"]:
@@ -343,26 +346,24 @@ class SegmentedBandSolver(Solver):
             #     if i is None or not active_by_direction["down"]:
             #         return []
             #     return [t_idx[("down", active_by_direction["down"][0])][i]]
-            # if name.startswith("bD_"):
-            #     seg_idx = seg_name_to_idx.get(name[3:])
-            #     if seg_idx is None:
-            #         return []
-            #     return [width_idx[("down", band_no)][seg_idx] for band_no in active_by_direction["down"]]
-            # if name.startswith("bU_"):
-            #     seg_idx = seg_name_to_idx.get(name[3:])
-            #     if seg_idx is None:
-            #         return []
-            #     return [width_idx[("up", band_no)][seg_idx] for band_no in active_by_direction["up"]]
 
-            if (
-                name in ("b_up", "b_down", "B_bal")
-                or name.startswith(("tU_", "tD_", "bD_", "bU_"))
-            ):
+            if name.startswith(("tU_", "tD_")):
                 raise ValueError(
-                    f"特殊变量 {name!r} 已停用；"
-                    "请改用 ObjectiveConfig 表达带层目标，"
-                    "或使用 SignalConstraint / SignalLoss 表达路口规则。"
+                    f"时间特殊变量 {name!r} 已停用；"
+                    "它在多 band 模型下只代表第一条 band，容易产生歧义。"
+                    "请改用 ObjectiveConfig 或 SignalConstraint / SignalLoss。"
                 )
+
+            if name.startswith("bD_"):
+                seg_idx = seg_name_to_idx.get(name[3:])
+                if seg_idx is None:
+                    return []
+                return [width_idx[("down", band_no)][seg_idx] for band_no in active_by_direction["down"]]
+            if name.startswith("bU_"):
+                seg_idx = seg_name_to_idx.get(name[3:])
+                if seg_idx is None:
+                    return []
+                return [width_idx[("up", band_no)][seg_idx] for band_no in active_by_direction["up"]]
             return []
 
 

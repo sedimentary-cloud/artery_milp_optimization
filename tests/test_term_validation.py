@@ -195,8 +195,8 @@ class SolverValidationIntegrationTests(unittest.TestCase):
                 ]),
             )
 
-    def test_solver_rejects_deprecated_special_terms(self):
-        for term in ("b_up", "tU_I2"):
+    def test_solver_rejects_deprecated_time_special_terms(self):
+        for term in ("tU_I2", "tD_I3"):
             with self.subTest(term=term):
                 with self.assertRaises(ValueError) as ctx:
                     SegmentedBandSolver(config=OBJECTIVE).solve(
@@ -205,7 +205,18 @@ class SolverValidationIntegrationTests(unittest.TestCase):
                             LinearSpec(terms={term: 1.0}, sense=">=", rhs=0.0)
                         ]),
                     )
-                self.assertIn("已停用", str(ctx.exception))
+                self.assertIn("时间特殊变量", str(ctx.exception))
+
+    def test_solver_accepts_bandwidth_special_terms(self):
+        for term in ("b_up", "b_down", "bU_S12", "bD_S23"):
+            with self.subTest(term=term):
+                solution = SegmentedBandSolver(config=OBJECTIVE).solve(
+                    one_plan_arterial(),
+                    constraint_builder=ConstraintBuilder([
+                        LinearSpec(terms={term: 1.0}, sense=">=", rhs=0.0)
+                    ]),
+                )
+                self.assertEqual(solution.status, "optimal")
 
 
 

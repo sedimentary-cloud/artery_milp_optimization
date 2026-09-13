@@ -67,7 +67,8 @@ class SegmentLossSpec:
     terms 当前建议只使用：
     - `I2.up.1.start` / `I3.down.2.end`
 
-    旧特殊变量 `tU_*` / `tD_*` / `b_up` / `b_down` / `bD_*` / `B_bal`
+    带宽类特殊变量 `b_up` / `b_down` / `bD_*` / `bU_*` / `B_bal` 保留，
+    但它们表示所有全局 band 的聚合；时间类特殊变量 `tU_*` / `tD_*`
     已停用，不建议再使用。
 
     损失形式：
@@ -150,7 +151,8 @@ class LinearSpec:
     - `I2.up.1.start`
     - `I3.down.2.end`
 
-    旧特殊变量 `tU_*` / `tD_*` / `b_up` / `b_down` / `bD_*` / `B_bal`
+    带宽类特殊变量 `b_up` / `b_down` / `bD_*` / `bU_*` / `B_bal` 保留，
+    但它们表示所有全局 band 的聚合；时间类特殊变量 `tU_*` / `tD_*`
     已停用，不建议再使用。
 
     外部声明约定：

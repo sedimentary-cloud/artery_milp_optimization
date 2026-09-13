@@ -519,7 +519,7 @@ i2 = Intersection("I2", [
 3. 外部 term 如果引用了某个候选方案不存在的端点，Stage 1 会在统一校验阶段直接报错；
 4. Stage 1 本身不建模 `SignalConstraint` / `SignalLoss`，它们的实际效果发生在 Stage 2；把路口内部规则放在方案里语义最清晰。
 
-**当前版本不推荐用户直接使用 `LinearSpec` / `SegmentLossSpec`。** 如果确实需要跨路口扩展，只建议使用完整路口端点 term，例如 `I1.up.1.start`；不要使用 `b_up`、`tU_I2` 等特殊变量。跨路口的 `LinearSpec` / `SegmentLossSpec` 用法见第 3.6 节。
+**当前版本不推荐用户直接使用 `LinearSpec` / `SegmentLossSpec`。** 如果确实需要跨路口扩展，建议优先使用完整路口端点 term，例如 `I1.up.1.start`。带宽类特殊变量 `b_up`、`b_down`、`bU_*`、`bD_*`、`B_bal` 仍然保留（注意它们是聚合求和语义）；时间类特殊变量 `tU_*`、`tD_*` 已停用。
 
 ---
 
@@ -714,7 +714,8 @@ margin = BandMarginConfig(
 > 优先使用 `ObjectiveConfig` 描述带层目标，优先使用 `SignalConstraint` / `SignalLoss` 描述路口内部规则。
 >
 > 如果确实必须使用外部构建器，只建议使用完整的 `{Int}.{dir}.{idx}.{start|end}` term，例如 `I1.up.1.start`。
-> `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 等特殊变量已经停用，解析逻辑在 Stage 1 / Stage 2 中只保留注释，写入会报错，避免静默丢约束。
+> 带宽类特殊变量 `b_up`、`b_down`、`bU_*`、`bD_*`、`B_bal` 仍然保留，但它们是“所有全局 band 聚合”的语义；
+> 时间类特殊变量 `tU_*`、`tD_*` 已停用，解析逻辑在 Stage 1 / Stage 2 中只保留注释，写入会报错，避免在多 band 下产生歧义。
 
 以下工具只适合跨路口、带宽层、临时策略，**不建议**用来描述单个路口内部关系。
 
@@ -759,7 +760,8 @@ soft = SegmentLossBuilder([
 - `lower_threshold / upper_threshold` 是周期比例；
 - `kind="band"` 的损失记入 `band_loss`，`kind="intersection"` 记入 `intersection_loss`；
 - 当前只推荐使用完整 term `{Int}.{dir}.{idx}.{start|end}`；
-- `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 等特殊变量已停用，不建议再写，写入会报错。
+- 带宽类特殊变量 `b_up`、`b_down`、`bU_*`、`bD_*`、`B_bal` 保留，但语义是所有全局 band 的聚合；
+- 时间类特殊变量 `tU_*`、`tD_*` 已停用，不建议再写，写入会报错。
 
 #### `plan_tags` 条件约束
 
@@ -828,7 +830,8 @@ from artery_milp.solvers.builders import (
 | `idx` | 从 1 开始，且对应段必须存在 |
 | Stage 1 端点可用性 | 必须被该路口的**所有候选方案**共同定义 |
 | Stage 2 端点可用性 | 必须被**选中方案**定义 |
-| 特殊变量 | `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 已停用；不建议外部写入，求解器遇到会主动报错 |
+| 带宽特殊变量 | `b_up`、`b_down`、`bU_*`、`bD_*`、`B_bal` 保留；语义是相关全局 band 的聚合 |
+| 时间特殊变量 | `tU_*`、`tD_*` 已停用；求解器遇到会主动报错 |
 | `plan_tags` | 引用的路口和方案名必须存在 |
 | 部分解析 | 不允许；任一 term 非法，整条 spec 拒绝 |
 
@@ -1461,10 +1464,10 @@ SegmentLossBuilder([
 | `down.2.start` / `down.2.end` | 当前路口下行第 2 段起止 | `SignalConstraint` / `SignalLoss` |
 | `I2.up.1.start` | `I2` 上行第 1 段起点 | `LinearSpec` / `SegmentLossSpec` |
 | `I3.down.2.end` | `I3` 下行第 2 段终点 | `LinearSpec` / `SegmentLossSpec` |
-| `b_up` / `b_down` | 旧特殊变量：上/下行全走廊带宽聚合 | 已停用 |
+| `b_up` / `b_down` | 上/下行所有全局 band 的带宽聚合 | 高级约束/损失（聚合语义） |
 | `tU_I2` / `tD_I2` | 旧特殊变量：上/下行第一条带到达 `I2` 的时刻 | 已停用 |
-| `bU_S12` / `bD_S12` | 旧特殊变量：上/下行在物理路段 `S12` 上的带宽聚合 | 已停用 |
-| `B_bal` | 旧特殊变量：首个 `BalanceGroup` 的组内最小值 | 已停用 |
+| `bU_S12` / `bD_S12` | 上/下行所有全局 band 在物理路段 `S12` 上的宽度聚合 | 高级约束/损失（聚合语义） |
+| `B_bal` | 首个 `BalanceGroup` 的组内最小值 | 高级约束/损失 |
 
 ## 附录 B：常见问题
 
