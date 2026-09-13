@@ -23,9 +23,6 @@ class Solution:
     plan_choices: dict[str, str] = field(default_factory=dict)
     bandwidth_up: dict[str, float] = field(default_factory=dict)
     bandwidth_down: dict[str, float] = field(default_factory=dict)
-    # 每个方向的带宽形态：global = 全局一条；local = 分段/局部带宽
-    band_up_style: str = "global"
-    band_down_style: str = "global"
     # 带子在各路口的起始时刻（秒，mod 周期），绘制时空图用
     band_start_up: dict[str, float] = field(default_factory=dict)
     band_start_down: dict[str, float] = field(default_factory=dict)
@@ -38,8 +35,6 @@ class Solution:
     window_band_ranges: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     # 段级时刻：路口名 -> "up.1.start"/"down.2.end" -> 秒。
     segment_times: dict[str, dict[str, float]] = field(default_factory=dict)
-    # 窗口选择：路口名 -> {"plan": 方案名, "up_window": 下标, "down_window": 下标}
-    window_choices: dict[str, dict[str, int | str]] = field(default_factory=dict)
     # 多段绿波带：方向 -> 段号(1-based) -> 全走廊公共带宽（秒）。
     multi_bandwidths: dict[str, dict[int, float]] = field(default_factory=dict)
     # 多段绿波带起点：方向 -> 段号(1-based) -> 路口名 -> 到达时刻（秒）。
@@ -74,14 +69,11 @@ class Solution:
             "plan_choices": self.plan_choices,
             "bandwidth_up": self.bandwidth_up,
             "bandwidth_down": self.bandwidth_down,
-            "band_up_style": self.band_up_style,
-            "band_down_style": self.band_down_style,
             "band_start_up": self.band_start_up,
             "band_start_down": self.band_start_down,
             "window_bands": self.window_bands,
             "window_band_ranges": self.window_band_ranges,
             "segment_times": self.segment_times,
-            "window_choices": self.window_choices,
             "multi_bandwidths": self.multi_bandwidths,
             "multi_band_starts": self.multi_band_starts,
             "multi_window_bands": self.multi_window_bands,

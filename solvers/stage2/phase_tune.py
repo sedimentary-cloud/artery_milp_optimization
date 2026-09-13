@@ -706,17 +706,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
             }
             for i, expr in enumerate(exprs)
         }
-        sol.window_choices = {}
-        for i, expr in enumerate(exprs):
-            entry: dict[str, int | str] = {"plan": selected[i].name}
-            if expr.up_labels:
-                entry["up_segment"] = expr.up_labels[0]
-                entry["up_window"] = 0
-            if expr.down_labels:
-                entry["down_segment"] = expr.down_labels[0]
-                entry["down_window"] = 0
-            sol.window_choices[int_names[i]] = entry
-
         sol.multi_bandwidths = {"up": {}, "down": {}}
         sol.multi_band_starts = {"up": {}, "down": {}}
         sol.multi_window_bands = {"up": {}, "down": {}}
@@ -763,9 +752,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops, margin=self.margin)
         fill_solution_window_band_ranges(sol, arterial)
-        # 当前 solver 始终输出多段带，风格固定为 multi。
-        sol.band_up_style = "multi"
-        sol.band_down_style = "multi"
 
         band_loss = 0.0
         intersection_loss = 0.0

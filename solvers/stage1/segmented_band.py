@@ -499,8 +499,6 @@ class SegmentedBandSolver(Solver):
         )
 
         sol = Solution(cycle=cycle, solver_msg=f"HiGHS via scipy: success={result.success}")
-        sol.band_up_style = "multi"
-        sol.band_down_style = "multi"
         if result.x is None:
             sol.status = "infeasible"
             return sol
@@ -512,15 +510,6 @@ class SegmentedBandSolver(Solver):
         }
         selected = [options[i][chosen_plan_idx[int_names[i]]] for i in range(n)]
         sol.plan_choices = {int_names[i]: selected[i].name for i in range(n)}
-        sol.window_choices = {
-            int_names[i]: {
-                "plan": selected[i].name,
-                "up_window": 0 if selected[i].up_segments else -1,
-                "down_window": 0 if selected[i].down_segments else -1,
-            }
-            for i in range(n)
-        }
-
         sol.multi_bandwidths = {"up": {}, "down": {}}
         sol.multi_band_starts = {"up": {}, "down": {}}
         sol.multi_window_bands = {"up": {}, "down": {}}

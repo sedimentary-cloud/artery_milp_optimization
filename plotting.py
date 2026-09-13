@@ -155,50 +155,6 @@ def plot_time_space(arterial: Arterial,
                 plan = inter.plan_by_name(solution.plan_choices[inter.name])
             except KeyError:
                 plan = inter.plans[0]
-        win_up = max(plan.up_windows, key=lambda w: w.width)
-        win_dn = max(plan.down_windows, key=lambda w: w.width)
-
-        # 如果求解器返回了选中的窗口，优先使用选中的窗口而不是最宽窗口
-        if solution is not None and inter.name in solution.window_choices:
-            wc = solution.window_choices[inter.name]
-            try:
-                up_idx = int(wc.get("up_window", -1))
-                dn_idx = int(wc.get("down_window", -1))
-                if 0 <= up_idx < len(plan.up_windows):
-                    win_up = plan.up_windows[up_idx]
-                if 0 <= dn_idx < len(plan.down_windows):
-                    win_dn = plan.down_windows[dn_idx]
-            except (TypeError, ValueError, KeyError):
-                pass
-
-        # 第二阶段段级优化后，优先使用 segment_times 反算各段绿灯窗。
-        if (
-            solution is not None
-            and inter.name in solution.segment_times
-        ):
-            st = solution.segment_times[inter.name]
-            up_windows_to_draw = []
-            down_windows_to_draw = []
-            for seg_idx in range(1, len(plan.up_windows) + 1):
-                s_key = f"up.{seg_idx}.start"
-                e_key = f"up.{seg_idx}.end"
-                if s_key in st and e_key in st:
-                    up_windows_to_draw.append(GreenWindow(float(st[s_key]) / C, float(st[e_key]) / C))
-            for seg_idx in range(1, len(plan.down_windows) + 1):
-                s_key = f"down.{seg_idx}.start"
-                e_key = f"down.{seg_idx}.end"
-                if s_key in st and e_key in st:
-                    down_windows_to_draw.append(GreenWindow(float(st[s_key]) / C, float(st[e_key]) / C))
-            if up_windows_to_draw:
-                win_up = up_windows_to_draw[min(
-                    int(solution.window_choices.get(inter.name, {}).get("up_window", 0)),
-                    len(up_windows_to_draw) - 1,
-                )]
-            if down_windows_to_draw:
-                win_dn = down_windows_to_draw[min(
-                    int(solution.window_choices.get(inter.name, {}).get("down_window", 0)),
-                    len(down_windows_to_draw) - 1,
-                )]
         # 需要绘制的绿灯窗口集合。
         # 有 segment_times 时，使用反算出的段级窗口；否则绘制方案里的全部绿灯窗口。
         if (solution is not None
@@ -245,23 +201,8 @@ def plot_time_space(arterial: Arterial,
         #   - 横坐标放在每个周期灯条的中心；
         #   - 沿时间轴每个周期重复，铺满整张时空图；
         #   - 垂直位置分别贴近上行/下行灯条。
-        wc = (solution.window_choices.get(inter.name)
-              if solution is not None and solution.window_choices else None)
-        if wc and wc.get("up_segment"):
-            label_up = wc["up_segment"]
-        elif wc and "up_window" in wc:
-            up_idx = int(wc["up_window"])
-            label_up = f"up.{up_idx + 1}" if up_idx >= 0 else None
-        else:
-            label_up = "up.1" if plan.up_windows else None
-
-        if wc and wc.get("down_segment"):
-            label_down = wc["down_segment"]
-        elif wc and "down_window" in wc:
-            down_idx = int(wc["down_window"])
-            label_down = f"down.{down_idx + 1}" if down_idx >= 0 else None
-        else:
-            label_down = "down.1" if plan.down_windows else None
+        label_up = "up.1" if plan.up_windows else None
+        label_down = "down.1" if plan.down_windows else None
 
         labels = []
         if label_up:
@@ -286,17 +227,11 @@ def plot_time_space(arterial: Arterial,
                 bbox=dict(facecolor="white", edgecolor="none", alpha=0.85,
                           boxstyle="round,pad=0.2"))
 
-    # 求解器通过 Solution.band_up_style / band_down_style 告诉绘图：
-    # global 画成全局绿波带颜色；local 画成浅色局部带。
-    up_style = "global"
-    down_style = "global"
     has_window_bands = False
     has_multi_bands = False
     has_multi_window_bands = False
     global_range_entries = {"up": [], "down": []}
     if solution is not None:
-        up_style = getattr(solution, "band_up_style", "global")
-        down_style = getattr(solution, "band_down_style", "global")
         has_window_bands = bool(solution.window_bands)
         has_multi_bands = bool(solution.multi_bandwidths)
         has_multi_window_bands = bool(getattr(solution, "multi_window_bands", {}))
@@ -313,7 +248,7 @@ def plot_time_space(arterial: Arterial,
         Patch(facecolor="darkorange", alpha=1.0, label="Red (Down)"),
     ]
     if solution is not None and (
-        up_style == "global" or has_multi_bands or global_range_entries["up"]
+        has_multi_bands or global_range_entries["up"] or bool(solution.bandwidth_up)
     ):
         handles.append(Patch(
             facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
@@ -323,7 +258,7 @@ def plot_time_space(arterial: Arterial,
             label="Up Band",
         ))
     if solution is not None and (
-        down_style == "global" or has_multi_bands or global_range_entries["down"]
+        has_multi_bands or global_range_entries["down"] or bool(solution.bandwidth_down)
     ):
         handles.append(Patch(
             facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
@@ -520,11 +455,11 @@ def plot_time_space(arterial: Arterial,
             "up": None,
             "down": None,
         }
-        if up_style == "global" and solution.bandwidth_up:
+        if solution.bandwidth_up:
             bu = max(solution.bandwidth_up.values(), default=0.0)
             if bu > 0:
                 global_specs["up"] = (tU, bu, GLOBAL_UP_COLOR, GLOBAL_UP_HATCH)
-        if down_style == "global" and solution.bandwidth_down:
+        if solution.bandwidth_down:
             bd = max(solution.bandwidth_down.values(), default=0.0)
             if bd > 0:
                 global_specs["down"] = (tD, bd, GLOBAL_DOWN_COLOR, GLOBAL_DOWN_HATCH)

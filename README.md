@@ -1068,14 +1068,11 @@ class Solution:
 
     # 选择与时序
     plan_choices: dict[str, str]
-    window_choices: dict[str, dict[str, int | str]]
     segment_times: dict[str, dict[str, float]]
 
     # 带宽结果
     bandwidth_up: dict[str, float]
     bandwidth_down: dict[str, float]
-    band_up_style: str
-    band_down_style: str
     band_start_up: dict[str, float]
     band_start_down: dict[str, float]
 
@@ -1102,7 +1099,6 @@ class Solution:
 | :--- | :--- |
 | `status` | 先看这个。`optimal` 最可信；`infeasible` 表示无可行解；带 `|stage1_fallback` 表示 Stage 2 失败，结果是 Stage 1 |
 | `plan_choices` | `路口名 -> 方案名`，Stage 1 选中的方案；Stage 2 沿用 |
-| `window_choices` | `路口名 -> {"plan": ..., "up_window": 0, ...}`，记录窗口/段号选择 |
 | `segment_times` | Stage 2 最重要字段：`路口名 -> term -> 秒`，例如 `{"I2": {"up.1.start": 9.0, ...}}`；Stage 1 通常为空 |
 
 ### 6.3 带宽结果
@@ -1110,7 +1106,6 @@ class Solution:
 | 字段 | 含义 |
 | :--- | :--- |
 | `bandwidth_up` / `bandwidth_down` | 兼容口径摘要：`物理路段名 -> 带宽秒`。全局口径下各路段同值；local 口径下逐路段不同 |
-| `band_up_style` / `band_down_style` | 结果口径标记；当前两个主 solver 固定输出 `multi` |
 | `band_start_up` / `band_start_down` | 聚合带在各路口的到达时刻（秒，`mod cycle`） |
 | `multi_bandwidths` | `方向 -> 段号 -> 全走廊带宽秒`，多段模型最原始结果 |
 | `multi_band_starts` | `方向 -> 段号 -> 路口 -> 到达时刻秒`，适合解包轨迹/画图 |
