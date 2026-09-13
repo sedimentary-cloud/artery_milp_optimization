@@ -9,7 +9,7 @@
 
 输出：
 
-- ``cycle_sweep_iterative_maxband_score.png``：周期 -> 带层得分折线图；
+- ``cycle_sweep_iterative_maxband_score.png``：周期 -> band_score - intersection_loss 折线图；
 - ``cycle_sweep_iterative_maxband_score.csv``：每个周期的详细结果。
 """
 
@@ -227,39 +227,55 @@ def save_csv(rows: list[dict[str, object]]) -> Path:
 def plot_curve(rows: list[dict[str, object]]) -> Path:
     cycles = [float(row["cycle"]) for row in rows]
     band_scores = [float(row["band_score"]) for row in rows]
-    band_objectives = [float(row["band_objective"]) for row in rows]
+    inter_losses = [float(row["intersection_loss"]) for row in rows]
+    net_scores = [
+        band - loss
+        for band, loss in zip(band_scores, inter_losses)
+    ]
 
     fig, ax = plt.subplots(figsize=(10, 5.5))
+
+    # 主曲线：band_score - intersection_loss。
     ax.plot(
         cycles,
-        band_scores,
+        net_scores,
         marker="o",
         markersize=3.5,
         linewidth=1.8,
         color="#1f77b4",
-        label="band_score = objective - 0.5 * band_loss",
+        label="band_score - intersection_loss",
+    )
+    # 两条细虚线作为组成项参考。
+    ax.plot(
+        cycles,
+        band_scores,
+        linestyle=":",
+        linewidth=1.0,
+        color="#2ca02c",
+        alpha=0.65,
+        label="band_score",
     )
     ax.plot(
         cycles,
-        band_objectives,
-        linestyle="--",
-        linewidth=1.2,
-        color="#ff7f0e",
-        alpha=0.85,
-        label="band_objective (before loss penalty)",
+        inter_losses,
+        linestyle=":",
+        linewidth=1.0,
+        color="#d62728",
+        alpha=0.65,
+        label="intersection_loss",
     )
 
     valid = [
-        (float(row["cycle"]), float(row["band_score"]))
-        for row in rows
-        if not math.isnan(float(row["band_score"]))
+        (cycle, net)
+        for cycle, net in zip(cycles, net_scores)
+        if not math.isnan(net)
     ]
     if valid:
-        best_cycle, best_score = max(valid, key=lambda item: item[1])
-        ax.scatter([best_cycle], [best_score], color="#d62728", s=55, zorder=5)
+        best_cycle, best_net = max(valid, key=lambda item: item[1])
+        ax.scatter([best_cycle], [best_net], color="#d62728", s=55, zorder=5)
         ax.annotate(
-            f"best: C={best_cycle:g}s, score={best_score:.2f}",
-            xy=(best_cycle, best_score),
+            f"best: C={best_cycle:g}s, net={best_net:.2f}",
+            xy=(best_cycle, best_net),
             xytext=(8, 10),
             textcoords="offset points",
             fontsize=9,
@@ -267,8 +283,8 @@ def plot_curve(rows: list[dict[str, object]]) -> Path:
         )
 
     ax.set_xlabel("Cycle C (s)")
-    ax.set_ylabel("Corridor objective score")
-    ax.set_title("Stage 1 max-band (global_sum) score vs cycle")
+    ax.set_ylabel("band_score - intersection_loss")
+    ax.set_title("Stage 1: band_score - intersection_loss vs cycle")
     ax.grid(alpha=0.3)
     ax.legend(loc="best", fontsize=9)
 
