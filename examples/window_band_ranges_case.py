@@ -47,8 +47,8 @@ def build_window_range_case() -> Arterial:
         "I1": [
             SignalPlan(
                 name="baseline",
-                up_segments=make_windows([(0.05, 0.24)]),
-                down_segments=make_windows([(0.58, 0.76)]),
+                up_segments=make_windows([(0.05, 0.64)]),
+                down_segments=make_windows([(0.38, 0.76)]),
             ),
         ],
         "I2": [
@@ -59,8 +59,8 @@ def build_window_range_case() -> Arterial:
             ),
             SignalPlan(
                 name="split_priority",
-                up_segments=make_windows([(0.15, 0.29), (0.31, 0.42)]),
-                down_segments=make_windows([(0.43, 0.66), (0.68, 0.78)]),
+                up_segments=make_windows([(0.15, 0.29), (0.31, 0.92)]),
+                down_segments=make_windows([(0.23, 0.66), (0.68, 0.78)]),
                 signal_constraints=[
                     SignalConstraint(
                         terms={"up.2.start": 1.0, "up.1.end": -1.0},
@@ -78,11 +78,11 @@ def build_window_range_case() -> Arterial:
                 signal_losses=[
                     SignalLoss(
                         terms={"down.1.start": 1.0},
-                        lower_threshold=0.42,
-                        upper_threshold=0.46,
-                        lower_slope=1.5,
-                        upper_slope=1.5,
-                        name="希望 split_priority 的下行首段更靠近周期中部前缘",
+                        lower_threshold=0.28,
+                        upper_threshold=0.34,
+                        lower_slope=1.0,
+                        upper_slope=1.0,
+                        name="希望 split_priority 的下行首段不要贴住加宽后的左边缘",
                     ),
                 ],
                 # Stage 2 只会在这些范围内微调对应端点；未列出的端点保持名义值。
@@ -91,9 +91,9 @@ def build_window_range_case() -> Arterial:
                         "up.1.start":   (0.13, 0.17),
                         "up.1.end":     (0.27, 0.31),
                         "up.2.start":   (0.30, 0.33),
-                        "down.1.start": (0.41, 0.45),
-                        "down.1.end":   (0.64, 0.68),
-                        "down.2.start": (0.66, 0.70),
+                        "down.1.start": (0.28, 0.34),
+                        "down.1.end":   (0.58, 0.64),
+                        "down.2.start": (0.66, 0.72),
                     }
                 },
             ),
@@ -101,8 +101,8 @@ def build_window_range_case() -> Arterial:
         "I3": [
             SignalPlan(
                 name="baseline",
-                up_segments=make_windows([(0.29, 0.48)]),
-                down_segments=make_windows([(0.33, 0.52)]),
+                up_segments=make_windows([(0.29, 0.68)]),
+                down_segments=make_windows([(0.33, 0.82)]),
             ),
             SignalPlan(
                 name="split_balanced",
@@ -115,15 +115,21 @@ def build_window_range_case() -> Arterial:
                         rhs=0.04,
                         name="下行首段结束需晚于上行首段开始至少 0.04 周期",
                     ),
+                    SignalConstraint(
+                        terms={"down.2.start": 1.0, "down.1.end": -1.0},
+                        sense=">=",
+                        rhs=0.02,
+                        name="下行两段之间至少保留 0.02 周期间隔",
+                    ),
                 ],
                 signal_losses=[
                     SignalLoss(
                         terms={"up.2.end": 1.0},
-                        lower_threshold=0.53,
-                        upper_threshold=0.57,
+                        lower_threshold=0.51,
+                        upper_threshold=0.55,
                         lower_slope=1.0,
                         upper_slope=1.0,
-                        name="希望 split_balanced 的上行第二段结束时刻靠近 0.55",
+                        name="希望 split_balanced 的上行第二段结束时刻落在窗口内",
                     ),
                 ],
             ),
@@ -131,8 +137,8 @@ def build_window_range_case() -> Arterial:
         "I4": [
             SignalPlan(
                 name="baseline",
-                up_segments=make_windows([(0.41, 0.60)]),
-                down_segments=make_windows([(0.21, 0.40)]),
+                up_segments=make_windows([(0.41, 0.80)]),
+                down_segments=make_windows([(0.21, 0.90)]),
             ),
         ],
     }
