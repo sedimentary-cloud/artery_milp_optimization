@@ -1,10 +1,10 @@
-"""迭代式 max-band 目标的周期扫描示例。
+"""Stage 1 max-band 目标的周期扫描示例。
 
 复用 ``objective_templates_comparison.py`` 里的 3.1 场景与配置：
 
 - 干线、路口、信号方案和约束来自 ``build_comparison_arterial()``；
 - 目标使用 3.1 的 ``global_sum``，即最大化所有全局 band 的带宽和；
-- 求解器使用 ``IterativeTwoStageSolver``；
+- 求解器只使用 Stage 1（``SegmentedBandSolver``），不运行 Stage 2；
 - 遍历公共周期 C = 40, 42, ..., 120 秒，记录 3.1 口径的带层得分并绘制折线图。
 
 输出：
@@ -32,11 +32,10 @@ if str(ROOT) not in sys.path:
 
 from artery_milp.models import (Arterial, Intersection, SignalConstraint,
                                 SignalLoss, SignalPlan)
-from artery_milp.solvers.pipeline import IterativeTwoStageSolver
+from artery_milp.solvers.stage1 import SegmentedBandSolver
 from artery_milp.examples.objective_templates_comparison import (
     build_comparison_arterial,
     build_margin,
-    build_two_stage_config,
     objective_global_sum,
 )
 
@@ -157,16 +156,17 @@ def build_cycle_arterial(cycle: float) -> Arterial:
 
 
 def solve_one_cycle(cycle: float) -> dict[str, object]:
-    """在指定周期下运行 iterative max-band 求解。"""
+    """在指定周期下只运行 Stage 1 max-band 求解。"""
     try:
         arterial = build_cycle_arterial(cycle)
-        config = build_two_stage_config(
-            mode="global",
-            objective=objective_global_sum(),
+        solver = SegmentedBandSolver(
+            config=objective_global_sum(),
+            max_loops=3,
+            up_global_output=True,
+            down_global_output=True,
             margin=build_margin(),
         )
-        solver = IterativeTwoStageSolver(config=config, max_iterations=10)
-        sol = solver.solve(arterial)
+        sol = solver.solve(arterial, band_loss_weight=0.5)
     except Exception as exc:  # noqa: BLE001 - 示例需要把失败周期也记录进 CSV
         return {
             "cycle": float(cycle),
@@ -268,7 +268,7 @@ def plot_curve(rows: list[dict[str, object]]) -> Path:
 
     ax.set_xlabel("Cycle C (s)")
     ax.set_ylabel("Corridor objective score")
-    ax.set_title("Iterative max-band (global_sum) score vs cycle")
+    ax.set_title("Stage 1 max-band (global_sum) score vs cycle")
     ax.grid(alpha=0.3)
     ax.legend(loc="best", fontsize=9)
 
@@ -287,7 +287,7 @@ def main() -> None:
         c += CYCLE_STEP
 
     rows: list[dict[str, object]] = []
-    print("开始周期扫描：iterative max-band (3.1 global_sum)")
+    print("开始周期扫描：Stage 1 max-band (3.1 global_sum)")
     for cycle in cycles:
         row = solve_one_cycle(cycle)
         rows.append(row)
