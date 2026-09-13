@@ -13,7 +13,7 @@ import numpy as np
 
 from ...solution import Solution
 from ..core.base import Solver
-from ..stage1.flexible_band import composite_config, oneway_config
+from ..core.objective import composite_config, oneway_config
 from ..stage1.segmented_band import SegmentedBandSolver
 from ..stage2.phase_tune import (FullFlexiblePhaseTuneSolver,
                                  PhaseTuneSolver)

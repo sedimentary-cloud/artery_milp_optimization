@@ -290,3 +290,120 @@ def parse_band_key(text: str, n_intersections: int | None = None) -> BandKey:
         return BandKey(direction, k, start)
 
     raise ValueError(f"无法解析带标识: {text}")
+
+
+def composite_config(up_weight: float = 1.0,                 # 上行全局带权重
+                     down_weight: float = 1.0,               # 下行全局带权重
+                     objective_mode: str = "sum",            # 目标模式：sum / balanced / balanced_composite
+                     balance_eps: float = 0.1,               # 复合目标里 min 项的权重
+                     balance_terms: tuple[str, ...] = ("up", "down")) -> ObjectiveConfig:
+    """CompositeBandSolver 的预设目标配置。
+
+    生成目标：
+        sum                 -> max up_weight*b_up + down_weight*b_down
+        balanced            -> max min(b_up, b_down)
+        balanced_composite  -> max up_weight*b_up + down_weight*b_down
+                                    + balance_eps * min(b_up, b_down)
+    """
+    if objective_mode == "sum":                              # 情况 1：纯加权和
+        return ObjectiveConfig(sum_groups=[SumGroup({        # 创建一个 SumGroup
+            "up.global": up_weight,                          # 上行全局带权重
+            "down.global": down_weight,                      # 下行全局带权重
+        })])
+
+    if objective_mode == "balanced":                         # 情况 2：纯均衡
+        members = [f"{d}.global" for d in balance_terms]     # 例如 ["up.global", "down.global"]
+        return ObjectiveConfig(balance_groups=[BalanceGroup(members, weight=1.0)])  # max min(members)
+
+    if objective_mode == "balanced_composite":               # 情况 3：加权和 + 均衡托底
+        members = [f"{d}.global" for d in balance_terms]     # 均衡组包含哪些全局带
+        return ObjectiveConfig(
+            sum_groups=[SumGroup({                           # 1) 先加常规加权和
+                "up.global": up_weight,                      # 上行全局带权重
+                "down.global": down_weight,                  # 下行全局带权重
+            })],
+            balance_groups=[BalanceGroup(members, weight=balance_eps)],  # 2) 再加 eps*min
+        )
+
+    raise ValueError(f"unknown objective_mode: {objective_mode}")  # 未知模式直接报错
+
+
+def oneway_config(up_weight: float = 1.0,                        # 上行全局带权重
+                  window_weights: dict[int, float] | None = None,  # 任意窗口权重：{k: w_k}
+                  segment_down_weights: dict[str, float] | None = None,  # 下行逐段权重（可选）
+                  n_intersections: int = 0,                      # 路口数量
+                  normalize_window_weights: bool = True) -> ObjectiveConfig:
+    """OneWayPrioritySolver 的预设目标配置（下行分段 + 任意窗口带）。
+
+    参数：
+        up_weight: 上行全局带 b_up_global 的权重；
+        window_weights: 下行窗口权重字典：
+            {2: w2}          -> 只奖励每个下行路段；
+            {2: w2, 3: w3}   -> 再奖励每个下行三路口窗口；
+            {2: w2, 3: w3, 4: w4, ...} -> 支持任意 k <= n；
+            如果不写 2，默认 w2 = 1.0；
+        segment_down_weights: 下行逐段权重，优先级高于 window_weights[2]；
+            例如 {"seg1": 2.0, "seg3": 0.5}；
+        n_intersections: 路口数量 n，用于展开所有 k 窗口。
+        normalize_window_weights:
+            是否按窗口数量归一化权重；默认 True。
+
+            对窗口大小 k，内部每个窗口权重变为：
+                w_k / (n - k + 1)
+
+            这样“所有 k 窗口带的总权重”约为 w_k，
+            不再随路口数量 n 线性放大。
+
+    生成目标：
+        max up_weight * b_up_global
+          + Σ 下行每段权重 * b_down_seg
+          + Σ_k w_k * 所有下行 k 窗口带
+
+    若 normalize_window_weights=True，则最后一行内部实际为：
+        Σ_k (w_k / 窗口数) * 所有 k 窗口带
+    """
+    ww = dict(window_weights or {})                              # 复制窗口权重，避免修改原字典
+    if not ww:                                                   # 如果没有提供任何窗口权重
+        ww = {2: 1.0}                                            # 默认只奖励下行每个路段
+
+    seg_weights = dict(segment_down_weights or {})               # 复制逐段权重
+    terms: dict[str, float] = {"up.global": up_weight}           # 先放上行全局带
+
+    # k=2：每个下行路段。即使 ww 里没有 2，也用默认权重 1.0。
+    # 局部段数量 = n-1，若开启归一化，则每个默认段权重除以 n-1。
+    w2 = ww.get(2, 1.0)                                          # k=2 的默认权重
+    n_seg = n_intersections - 1
+    for i in range(n_seg):                                       # 遍历所有相邻路口段
+        seg_name = f"seg{i+1}"                                   # seg1, seg2, ...
+        if seg_name in seg_weights:
+            # 显式逐段权重：用户自己指定，不再按数量缩放。
+            terms[f"down.{seg_name}"] = seg_weights[seg_name]
+        else:
+            seg_weight = w2
+            if normalize_window_weights and n_seg > 0:
+                seg_weight = w2 / n_seg
+            terms[f"down.{seg_name}"] = seg_weight
+
+    # k>=3：任意窗口大小。
+    for k, weight in ww.items():                                 # 遍历用户配置的每个 k
+        if k == 2:                                               # k=2 已在上面处理
+            continue
+        if k < 2 or k > n_intersections:                         # 越界窗口直接报错
+            raise ValueError(
+                f"oneway_config: 非法窗口大小 k={k}, "
+                f"要求 2 <= k <= {n_intersections}"
+            )
+        if weight <= 0:                                          # 非正权重不加入目标
+            continue
+
+        n_windows = n_intersections - k + 1                      # 该 k 的窗口数量
+        effective_weight = weight
+        if normalize_window_weights and n_windows > 0:
+            effective_weight = weight / n_windows
+
+        for start1 in range(1, n_intersections - k + 2):         # 起点路口编号从 I1 开始
+            end1 = start1 + k - 1                                # 终点路口编号
+            key = f"down.win{k}@I{start1}-I{end1}"               # 例如 down.win4@I1-I4
+            terms[key] = effective_weight                        # 加入归一化后的窗口权重
+
+    return ObjectiveConfig(sum_groups=[SumGroup(terms)])         # 所有项放进一个 SumGroup

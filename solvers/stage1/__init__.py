@@ -1,11 +1,9 @@
 """第一阶段求解器。"""
 
-from .flexible_band import (FlexibleBandSolver, composite_config,
-                            oneway_config)
+from ..core.objective import composite_config, oneway_config
 from .segmented_band import SegmentedBandObjective, SegmentedBandSolver
 
 __all__ = [
-    "FlexibleBandSolver",
     "composite_config",
     "oneway_config",
     "SegmentedBandObjective",

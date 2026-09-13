@@ -10,12 +10,12 @@ from ...solution import Solution
 from ..core.base import Solver
 from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
-from ..core.objective import BandKey, ObjectiveConfig, parse_band_key
+from ..core.objective import (BandKey, ObjectiveConfig, composite_config,
+                              oneway_config, parse_band_key)
 from ..builders.signal_constraints import (ConstraintBuilder, LinearSpec,
                                            PhaseLossBuilder, scale_linear_spec,
                                            window_exprs)
 from ..builders.term_validation import TermValidationContext
-from ..stage1.flexible_band import composite_config, oneway_config
 
 
 BandInstance = tuple[str, int]

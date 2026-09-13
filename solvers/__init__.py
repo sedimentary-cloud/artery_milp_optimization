@@ -14,13 +14,12 @@ from .builders import (AlignmentLossBuilder, ConstraintBuilder,
                        TermValidationContext, TermValidationError,
                        WindowExpr, direction_phase_name,
                        phase_start_times, window_exprs)
-from .core import (BalanceGroup, BandKey, BandModel, ObjectiveConfig, Solver,
-                   SumGroup, fill_solution_window_bands, parse_band_key)
+from .core import (BalanceGroup, BandKey, ObjectiveConfig, Solver,
+                   SumGroup, composite_config, oneway_config,
+                   parse_band_key)
 from .pipeline import (BandObjectiveConfig, EpsilonConstraintRunner,
                        IntersectionLossConfig, TwoStageConfig, TwoStageSolver)
-from .stage1 import (FlexibleBandSolver, SegmentedBandObjective,
-                     SegmentedBandSolver, composite_config,
-                     oneway_config)
+from .stage1 import SegmentedBandObjective, SegmentedBandSolver
 from .stage2 import (FlexiblePhaseTuneSolver, FullFlexiblePhaseTuneSolver,
                      PhaseTuneSolver)
 
@@ -33,8 +32,6 @@ __all__ = [
     "BalanceGroup",
     "ObjectiveConfig",
     "parse_band_key",
-    "BandModel",
-    "fill_solution_window_bands",
     "WindowExpr",
     "direction_phase_name",
     "phase_start_times",
@@ -44,7 +41,6 @@ __all__ = [
     "ConstraintBuilder",
     "LinearSpec",
     "AlignmentLossBuilder",
-    "FlexibleBandSolver",
     "SegmentedBandObjective",
     "SegmentedBandSolver",
     "composite_config",

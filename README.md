@@ -1613,7 +1613,7 @@ Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个
 
 ## 附录 C：当前边界与开发约定
 
-- `FlexibleBandSolver` 保留作为兼容层，不是主路径；
+- `composite_config` / `oneway_config` 现位于 `solvers/core/objective.py`，`solvers.stage1` 仍做兼容转发；
 - 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` / `AlignmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
 - `ObjectiveConfig` 里的 band key（如 `up.seg5`）目前由 `parse_band_key` 解析，但尚未做完整的段号边界校验，非法段号可能在后续建模阶段报错；
 - 仓库里可能残留 Windows 的 `*:Zone.Identifier` 文件，可安全删除。
