@@ -203,11 +203,21 @@ def build_window_range_case() -> Arterial:
             ),
         ],
         # I4 只有一个 baseline 方案。
+        # 虽然是单方案，也可以给它配置 metadata["term_bounds"]，
+        # 让 Stage 2 在给定范围内微调该方案的端点。
         "I4": [
             SignalPlan(
                 name="baseline",
                 up_segments=make_windows([(0.41, 0.80)]),
                 down_segments=make_windows([(0.21, 0.90)]),
+                metadata={
+                    "term_bounds": {
+                        "up.1.start":   (0.38, 0.44),
+                        "up.1.end":     (0.77, 0.83),
+                        "down.1.start": (0.18, 0.24),
+                        "down.1.end":   (0.87, 0.93),
+                    }
+                },
             ),
         ],
     }
@@ -408,23 +418,26 @@ def main() -> None:
     print(f"求解状态: {tuned.status}")
     print(f"选中的方案: {tuned.plan_choices}")
 
-    plan_name = tuned.plan_choices.get("I2")
-    plan = arterial.intersections["I2"].plan_by_name(plan_name)
     # 打印 Stage 2 实际的“名义值 -> 调整后值”，验证 term_bounds 是否生效。
-    bounds = plan.metadata.get("term_bounds", {})
-    if bounds:
+    # 本示例中 I2 和 I4 都配置了 term_bounds，所以两个路口都打印。
+    for inter_name in ("I2", "I4"):
+        plan_name = tuned.plan_choices.get(inter_name)
+        plan = arterial.intersections[inter_name].plan_by_name(plan_name)
+        bounds = plan.metadata.get("term_bounds", {})
+        if not bounds:
+            print(f"  {inter_name} 选中方案 {plan_name!r} 没有配置 term_bounds")
+            continue
+        print(f"  {inter_name} 端点调整：")
         for term in sorted(bounds):
-            new_seconds = tuned.segment_times.get("I2", {}).get(term)
+            new_seconds = tuned.segment_times.get(inter_name, {}).get(term)
             if new_seconds is None:
                 continue
             lower, upper = bounds[term]
             print(
-                f"  {term}: 名义 {plan.term_value(term) * CYCLE:.2f}s -> "
+                f"    {term}: 名义 {plan.term_value(term) * CYCLE:.2f}s -> "
                 f"调整后 {new_seconds:.2f}s, "
                 f"允许范围 [{lower * CYCLE:.2f}, {upper * CYCLE:.2f}]s"
             )
-    else:
-        print(f"  I2 选中方案 {plan_name!r} 没有配置 term_bounds")
 
     print(
         f"  band_objective={tuned.band_objective:.3f}, "
