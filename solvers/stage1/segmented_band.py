@@ -32,6 +32,35 @@ BandInstance = tuple[str, int]
 LatticeInstance = tuple[str, int, int, int]
 
 
+def _evaluate_plan_signal_losses(selected: list[SignalPlan], cycle: float) -> float:
+    """按名义端点计算选中方案的 plan 级 SignalLoss。
+
+    Stage 1 不建模段端点微调，因此选中方案的端点就是方案里的名义窗口。
+    这里把 ``SignalLoss`` 的阈值统一乘周期转成秒，再按软损失公式累加。
+    这部分不计入 MILP 目标，只用于让 Stage 1 结果也带有可比的
+    ``intersection_loss``。
+    """
+    total = 0.0
+    for plan in selected:
+        for spec in plan.signal_losses:
+            expr_value = sum(
+                coef * plan.term_value(term) * cycle
+                for term, coef in spec.terms.items()
+            )
+            if spec.lower_threshold is not None:
+                violation = max(0.0, spec.lower_threshold * cycle - expr_value)
+                total += spec.lower_slope * violation
+            if spec.upper_threshold is not None:
+                upper_slope = (
+                    spec.upper_slope
+                    if spec.upper_slope is not None
+                    else spec.lower_slope
+                )
+                violation = max(0.0, expr_value - spec.upper_threshold * cycle)
+                total += upper_slope * violation
+    return total
+
+
 class SegmentedBandSolver(Solver):
     """统一 Stage 1 核心：多段传播 + 多方案选择 + ObjectiveConfig。"""
 
@@ -976,19 +1005,6 @@ class SegmentedBandSolver(Solver):
         else:
             sol.bandwidth_down = dict(aggregated_edge_widths["down"])
 
-        if active_by_direction["up"]:
-            first_band = active_by_direction["up"][0]
-            sol.band_start_up = {
-                int_names[i]: float(x[t_idx[("up", first_band)][i]])
-                for i in range(n)
-            }
-        if active_by_direction["down"]:
-            first_band = active_by_direction["down"][0]
-            sol.band_start_down = {
-                int_names[i]: float(x[t_idx[("down", first_band)][i]])
-                for i in range(n)
-            }
-
         # 把主 MILP 的局部带结果先写进 Solution；
         # 再把所有方向、所有长度的“缺失局部带”自动补齐，方便画图。
         fill_solution_local_band_records(sol, arterial, local_records, clear=True)
@@ -1024,6 +1040,11 @@ class SegmentedBandSolver(Solver):
             else:
                 intersection_loss += weighted
 
+        # plan 级 SignalLoss 没有作为变量进入 Stage 1 MILP，但选中方案
+        # 已有名义端点，因此这里补算，避免 Stage 1 的 intersection_loss
+        # 永远为 0，导致 Pareto/汇报图错误。
+        intersection_loss += _evaluate_plan_signal_losses(selected, cycle)
+
         # 计算目标里的带层收益（不含损失）。
         band_objective = 0.0
         for group in config.sum_groups:
@@ -1040,10 +1061,11 @@ class SegmentedBandSolver(Solver):
                     )
 
         # 把最终统计写进 Solution。
-        # band_score = 带层收益 - 带损失权重 * band_loss。
+        # band_score 由 band_objective / band_loss / band_loss_weight
+        # 通过 Solution.band_score property 推导。
         sol.band_objective = float(band_objective)
         sol.band_loss = float(band_loss)
-        sol.band_score = float(band_objective - band_loss_weight * band_loss)
+        sol.band_loss_weight = float(band_loss_weight)
         sol.intersection_loss = float(intersection_loss)
         sol.objective = -float(result.fun)   # milp 求最小，取负就是最大化目标值
         sol.status = "optimal" if result.success else result.message

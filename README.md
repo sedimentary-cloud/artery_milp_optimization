@@ -1121,12 +1121,19 @@ class Solution:
     # 目标与损失
     band_objective: float
     band_loss: float
-    band_score: float
+    band_loss_weight: float
+    band_score: float         # property
     intersection_loss: float
     objective: float          # solver 原始目标
     status: str
     solver_msg: str
 ```
+
+`band_start_up` / `band_start_down` / `window_bands` / `band_score` 是只读
+property，不占 dataclass 字段：前两者由 `multi_band_starts` 中编号最小的
+band 推导，`window_bands` 由 `multi_window_bands` 聚合，`band_score` 由
+`band_objective - band_loss_weight * band_loss` 推导。`to_dict()` 仍输出
+这些同名 key，旧代码读取方式不变。
 
 ### 6.2 选择与时序
 
@@ -1141,11 +1148,11 @@ class Solution:
 | 字段 | 含义 |
 | :--- | :--- |
 | `bandwidth_up` / `bandwidth_down` | 兼容口径摘要：`物理路段名 -> 带宽秒`。全局口径下各路段同值；local 口径下逐路段不同 |
-| `band_start_up` / `band_start_down` | 聚合带在各路口的到达时刻（秒，`mod cycle`） |
+| `band_start_up` / `band_start_down` | 只读 property：`multi_band_starts` 中编号最小的 band 在各路口的到达时刻（秒，`mod cycle`） |
 | `multi_bandwidths` | `方向 -> band 编号 -> 全走廊带宽秒`，多带模型最原始结果 |
 | `multi_band_starts` | `方向 -> band 编号 -> 路口 -> 到达时刻秒`，适合解包轨迹/画图 |
 | `multi_window_bands` | `方向 -> band 编号 -> 窗口 key -> 带宽秒`，每个 band 对应的局部窗口带 |
-| `window_bands` | `窗口 key -> 带宽秒`，跨 band 聚合后的局部窗口带 |
+| `window_bands` | 只读 property：由 `multi_window_bands` 跨 band 聚合得到的 `窗口 key -> 带宽秒` |
 | `window_band_ranges` | `窗口 key -> [实例...]`，每个实例有显式时间范围，最适合导出和绘图 |
 
 `window_band_ranges` 的实例结构：
@@ -1172,7 +1179,8 @@ class Solution:
 | :--- | :--- |
 | `band_objective` | 带层收益，`SumGroup + BalanceGroup` 部分 |
 | `band_loss` | 带层软损失：Stage 2 软边距 + `kind="band"` 的 `SegmentLossSpec` |
-| `band_score` | `band_objective - band_loss_weight * band_loss`，带层真实得分 |
+| `band_loss_weight` | 带层软损失权重 λ，用于推导 `band_score` |
+| `band_score` | 只读 property：`band_objective - band_loss_weight * band_loss`，带层真实得分 |
 | `intersection_loss` | 交叉口层软损失：`kind="intersection"` 的损失 + 软 `LinearSpec` slack |
 | `objective` | solver 原始目标值，不同 solver/模式语义不同 |
 

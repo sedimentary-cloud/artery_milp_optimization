@@ -868,19 +868,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
         else:
             sol.bandwidth_down = dict(aggregated_edge_widths["down"])
 
-        if active_by_direction["up"]:
-            first_band = active_by_direction["up"][0]
-            sol.band_start_up = {
-                int_names[i]: float(x[t_idx[("up", first_band)][i]])
-                for i in range(n)
-            }
-        if active_by_direction["down"]:
-            first_band = active_by_direction["down"][0]
-            sol.band_start_down = {
-                int_names[i]: float(x[t_idx[("down", first_band)][i]])
-                for i in range(n)
-            }
-
         fill_solution_local_band_records(sol, arterial, local_records, clear=True)
         fill_solution_missing_window_bands(
             sol, arterial, max_window=5, max_loops=effective_max_loops, margin=self.margin
@@ -923,7 +910,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         sol.band_objective = float(band_objective)
         sol.band_loss = float(band_loss)
-        sol.band_score = float(band_objective - band_loss_weight * band_loss)
+        sol.band_loss_weight = float(band_loss_weight)
         sol.intersection_loss = float(intersection_loss)
         sol.objective = -float(result.fun)
         sol.status = "optimal" if result.success else result.message

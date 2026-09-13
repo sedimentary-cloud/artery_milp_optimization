@@ -497,10 +497,7 @@ def fill_solution_local_window_band_data(solution,
 
     if clear:
         solution.multi_window_bands = {"up": {}, "down": {}}
-        solution.window_bands.clear()
         solution.window_band_ranges.clear()
-
-    aggregated: dict[str, float] = {}
 
     for direction in ("up", "down"):
         direction_out: dict[int, dict[str, float]] = {}
@@ -523,7 +520,6 @@ def fill_solution_local_window_band_data(solution,
                     bandwidth, t_series = solved
                     key = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
                     direction_out.setdefault(segment_no, {})[key] = float(bandwidth)
-                    aggregated[key] = aggregated.get(key, 0.0) + float(bandwidth)
                     entry = {
                         "direction": direction,
                         "segment_no": segment_no,
@@ -543,9 +539,6 @@ def fill_solution_local_window_band_data(solution,
                         solution.window_band_ranges.setdefault(key, []).append(entry)
 
         solution.multi_window_bands[direction] = direction_out
-
-    if aggregated:
-        solution.window_bands.update(aggregated)
 
 
 def fill_solution_local_band_records(solution,
@@ -570,10 +563,8 @@ def fill_solution_local_band_records(solution,
 
     if clear:
         solution.multi_window_bands = {"up": {}, "down": {}}
-        solution.window_bands.clear()
         solution.window_band_ranges.clear()
 
-    aggregated: dict[str, float] = {}
     for record in records:
         direction = str(record["direction"])
         band_no = int(record["band_no"])
@@ -587,7 +578,6 @@ def fill_solution_local_band_records(solution,
         used_names = int_names[start:start + k]
 
         solution.multi_window_bands.setdefault(direction, {}).setdefault(band_no, {})[key] = bandwidth
-        aggregated[key] = aggregated.get(key, 0.0) + bandwidth
 
         if bandwidth <= 1e-9 or len(used_names) != k:
             continue
@@ -613,9 +603,6 @@ def fill_solution_local_band_records(solution,
         }
         solution.window_band_ranges.setdefault(key, []).append(entry)
 
-    if aggregated:
-        solution.window_bands.update(aggregated)
-
 
 def fill_solution_missing_window_bands(solution,
                                        arterial,
@@ -638,7 +625,6 @@ def fill_solution_missing_window_bands(solution,
     window_sets = _selected_segment_window_sets(solution, arterial, margin=margin)
 
     existing_keys = set(solution.window_band_ranges.keys())
-    added: dict[str, float] = {}
 
     # 从主解里推断每个方向建模了多少条 band；
     # 局部窗口最多补 2 条，避免对称性和变量数量过大。
@@ -675,7 +661,6 @@ def fill_solution_missing_window_bands(solution,
                     solution.multi_window_bands.setdefault(direction, {}).setdefault(
                         band_no, {}
                     )[key] = float(bandwidth)
-                    added[key] = added.get(key, 0.0) + float(bandwidth)
 
                     if bandwidth <= 1e-9:
                         continue
@@ -708,9 +693,6 @@ def fill_solution_missing_window_bands(solution,
                         },
                     }
                     solution.window_band_ranges.setdefault(key, []).append(entry)
-
-    for key, bandwidth in added.items():
-        solution.window_bands[key] = solution.window_bands.get(key, 0.0) + float(bandwidth)
 
 
 def fill_solution_window_band_ranges(solution,

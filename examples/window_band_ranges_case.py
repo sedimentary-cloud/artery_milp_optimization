@@ -102,12 +102,24 @@ def build_window_range_case() -> Arterial:
                 down_segments=make_windows([(0.38, 0.86)]),
                 signal_losses=[
                     SignalLoss(
-                        terms={"down.1.start": 1.0},
-                        upper_threshold=0.40,
-                        lower_slope=0.9,
-                        name="希望 down.1.start 不要开始太早",
+                        terms={"up.1.start": 1.0},
+                        upper_threshold=0.10,
+                        upper_slope=2.9,
+                        lower_threshold=0.08,
+                        lower_slope=0.5,
+                        name="希望 up.1.start 不要开始太晚",
                     ),
                 ],
+                # 给 up.1.start 增加 Stage 2 可调范围：
+                # - 下界 0.00 允许把上行首段提前，但会低于软下界 0.08；
+                # - 上界 0.15 允许晚于软上界 0.10；
+                # 因此 Stage 2 / Pareto 可以在提前、满足软区间、
+                # 过度推迟之间形成带宽/损失折中。
+                metadata={
+                    "term_bounds": {
+                        "up.1.start": (0.00, 0.15),
+                    }
+                },
             ),
         ],
         # I2 有两个候选方案：
@@ -427,8 +439,8 @@ def main() -> None:
     print(f"选中的方案: {tuned.plan_choices}")
 
     # 打印 Stage 2 实际的“名义值 -> 调整后值”，验证 term_bounds 是否生效。
-    # 本示例中 I2 和 I4 都配置了 term_bounds，所以两个路口都打印。
-    for inter_name in ("I2", "I4"):
+    # 本示例中 I1、I2 和 I4 都配置了 term_bounds，因此三个路口都打印。
+    for inter_name in ("I1", "I2", "I4"):
         plan_name = tuned.plan_choices.get(inter_name)
         plan = arterial.intersections[inter_name].plan_by_name(plan_name)
         bounds = plan.metadata.get("term_bounds", {})

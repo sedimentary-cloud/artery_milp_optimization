@@ -47,21 +47,6 @@ class Solution:
     # 示例: {"S12": 0.0, "S23": 0.0}
     bandwidth_down: dict[str, float] = field(default_factory=dict)
 
-    # 兼容摘要：上行第一条 band 在各路口的到达时刻（秒，mod cycle）。
-    # 新代码应优先使用 multi_band_starts["up"][band_no]；此字段只用于
-    # 旧绘图回退，可由 multi_band_starts 推导。
-    # 示例: {"I1": 4.5, "I2": 18.07, "I3": 32.71}
-    band_start_up: dict[str, float] = field(default_factory=dict)
-
-    # 兼容摘要：下行第一条 band 在各路口的到达时刻（秒，mod cycle）。
-    # 示例: {"I1": 68.4, "I2": 54.97, "I3": 40.69}
-    band_start_down: dict[str, float] = field(default_factory=dict)
-
-    # 局部窗口带带宽：窗口 key -> 带宽（秒）。
-    # key 格式: "{direction}.win{k}@{start_int}-{end_int}"。
-    # 示例: {"down.win3@I2-I4": 13.36}
-    window_bands: dict[str, float] = field(default_factory=dict)
-
     # 局部窗口带时间范围：窗口 key -> [实例, ...]。
     # 每个实例包含 direction/segment_no/bandwidth/intersections/
     # time_min/time_max/intersection_ranges。
@@ -111,9 +96,9 @@ class Solution:
     # 示例: 8.843
     band_loss: float = 0.0
 
-    # 带层最终得分: band_objective - band_loss_weight * band_loss。
-    # 示例: 25.184
-    band_score: float = 0.0
+    # 带层软损失的权重 λ，用于 property band_score。
+    # 示例: 0.5
+    band_loss_weight: float = 0.0
 
     # 交叉口层损失（信号损失 + 软 LinearSpec slack 违反量）。
     # 示例: 1.350
@@ -130,6 +115,39 @@ class Solution:
     # 底层求解器附加信息。
     # 示例: "HiGHS via scipy: success=True"
     solver_msg: str = ""
+
+    @property
+    def band_start_up(self) -> dict[str, float]:
+        """兼容摘要：上行第一条 band 在各路口的到达时刻（秒，mod cycle）。"""
+        return self._first_band_starts("up")
+
+    @property
+    def band_start_down(self) -> dict[str, float]:
+        """兼容摘要：下行第一条 band 在各路口的到达时刻（秒，mod cycle）。"""
+        return self._first_band_starts("down")
+
+    def _first_band_starts(self, direction: str) -> dict[str, float]:
+        """返回指定方向编号最小的 band 在各路口的到达时刻。"""
+        starts = self.multi_band_starts.get(direction) or {}
+        if not starts:
+            return {}
+        first_band = min(starts, key=lambda band_no: int(band_no))
+        return dict(starts[first_band])
+
+    @property
+    def window_bands(self) -> dict[str, float]:
+        """窗口 key -> 跨 band 聚合后的局部带宽（秒）。"""
+        aggregated: dict[str, float] = {}
+        for direction_map in self.multi_window_bands.values():
+            for key_map in direction_map.values():
+                for key, bandwidth in key_map.items():
+                    aggregated[key] = aggregated.get(key, 0.0) + float(bandwidth)
+        return aggregated
+
+    @property
+    def band_score(self) -> float:
+        """带层最终得分：band_objective - band_loss_weight * band_loss。"""
+        return self.band_objective - self.band_loss_weight * self.band_loss
 
     @property
     def total_bandwidth(self) -> float:
@@ -157,6 +175,7 @@ class Solution:
             "multi_window_bands": self.multi_window_bands,
             "band_objective": self.band_objective,
             "band_loss": self.band_loss,
+            "band_loss_weight": self.band_loss_weight,
             "band_score": self.band_score,
             "intersection_loss": self.intersection_loss,
             "objective": self.objective,
