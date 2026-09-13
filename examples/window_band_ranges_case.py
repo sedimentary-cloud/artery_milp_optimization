@@ -1,16 +1,40 @@
 """局部绿波带时间范围示例。
 
-这个示例展示：
-- Stage 1 求解后自动回填 `Solution.window_band_ranges`；
-- 如何读取内部相邻路口窗口带（非全局带）的时间范围；
-- 如何给单个路口配置多个可选 `SignalPlan`；
-- 如何在同一个 `SignalPlan` 内配置多个 `up/down segments`；
-- 如何把路口内约束/软损失直接绑定到某个 `SignalPlan`；
-- 如何给方案配置第二阶段可调范围 `metadata["term_bounds"]`；
-- 如何配置硬/软边距 `BandMarginConfig`；
-- 如何在 Stage 1 之后继续运行 Stage 2，查看 term_bounds 带来的端点微调；
-- 如何运行迭代两阶段 `IterativeTwoStageSolver`，直到窗口分配稳定；
-- 如何把该结果直接导出为 JSON，供绘图或外部系统消费。
+这个示例按顺序演示一个完整的绿波带优化流程：
+
+1. 构造一条 4 路口干线
+   - 每个路口可以有一个或多个候选 `SignalPlan`；
+   - 每个方案里，上行/下行都可以有 1 段或多段绿灯窗口；
+   - 方案内部可以带硬约束 `SignalConstraint` 和软损失 `SignalLoss`；
+   - 方案可以给 Stage 2 配置端点可调范围 `metadata["term_bounds"]`。
+
+2. 配置目标 `ObjectiveConfig`
+   - `up.global`：所有上行全局 band；
+   - `down.seg2`：下行第二个局部路段对应的 2 路口窗口带；
+   - `down.win3@I2-I4`：从 I2 到 I4 的 3 路口局部窗口带。
+
+3. 配置边距 `BandMarginConfig`
+   - 硬边距：绿波带不能贴住绿灯窗口边缘；
+   - 软边距：Stage 2 进一步希望带子居中，否则产生 `band_loss`。
+
+4. 运行 Stage 1：`SegmentedBandSolver`
+   - 选择每个路口的信号方案；
+   - 为每条 band 在每个路口自由选择绿灯窗口；
+   - 在固定窗口下优化带宽；
+   - 求解后自动回填所有方向、所有长度的 `window_band_ranges`。
+
+5. 运行 Stage 2：`FullFlexiblePhaseTuneSolver`
+   - 固定 Stage 1 选出的方案和窗口分配；
+   - 只在 `term_bounds` 范围内微调绿灯窗口端点；
+   - 同时考虑 `SignalConstraint` / `SignalLoss`、硬/软边距。
+
+6. 运行迭代两阶段：`IterativeTwoStageSolver`
+   - Stage 2 调完端点后，把新窗口写回 Stage 1；
+   - 再跑 Stage 1，直到窗口分配稳定或进入循环。
+
+7. 导出结果
+   - JSON：给外部系统读取；
+   - 时空图 PNG：Stage 1、Stage 2、迭代结果各一张。
 """
 
 from __future__ import annotations
@@ -41,13 +65,36 @@ CYCLE = 90.0
 
 
 def make_windows(values: list[tuple[float, float]]) -> list[GreenWindow]:
-    """函数名：make_windows；参数：比例区间列表；返回值：GreenWindow 列表；异常：ValueError。"""
+    """把 ``[(start, end), ...]`` 转成 ``GreenWindow`` 列表。
+
+    这里的 start/end 都是“占周期的比例”：
+    - 0.10 表示周期 10% 的位置；
+    - 0.30 表示周期 30% 的位置。
+
+    例如 CYCLE=90s 时：
+    - (0.10, 0.30) -> 第 9s 到第 27s 的绿灯窗口。
+    """
     return [GreenWindow(start, end) for start, end in values]
 
 
 def build_window_range_case() -> Arterial:
-    """函数名：build_window_range_case；参数：无；返回值：Arterial；异常：ValueError。"""
+    """构造这个示例使用的 4 路口干线。
+
+    结构是：
+
+        I1 --S12-- I2 --S23-- I3 --S34-- I4
+
+    上行方向是 I1 -> I2 -> I3 -> I4；
+    下行方向是 I4 -> I3 -> I2 -> I1。
+
+    每个路口可以有多个候选方案；
+    每个方案里，上行/下行又可以有 1 段或多段绿灯窗口。
+    """
+    # plans 是“路口名 -> 候选方案列表”。
+    # 每个路口至少要有 1 个方案；方案里上下行都要有绿灯窗口。
     plans = {
+        # I1 只有一个方案 baseline。
+        # 上行绿灯窗口在周期 5%~64%，下行在 38%~76%。
         "I1": [
             SignalPlan(
                 name="baseline",
@@ -55,16 +102,25 @@ def build_window_range_case() -> Arterial:
                 down_segments=make_windows([(0.38, 0.76)]),
             ),
         ],
+        # I2 有两个候选方案：
+        # - baseline：上下行各 1 段绿灯；
+        # - split_priority：上下行各 2 段绿灯，并带方案内部约束/软损失/Stage 2 可调范围。
         "I2": [
             SignalPlan(
                 name="baseline",
                 up_segments=make_windows([(0.17, 0.36)]),
                 down_segments=make_windows([(0.45, 0.64)]),
             ),
+            # split_priority 把上下行都拆成两段。
+            # 多段之间的间隔可以表达“黄灯/全红/损失时间”等物理含义；
+            # 这里用 SignalConstraint 明确要求两段之间至少留 0.02 个周期。
             SignalPlan(
                 name="split_priority",
                 up_segments=make_windows([(0.15, 0.29), (0.31, 0.92)]),
                 down_segments=make_windows([(0.23, 0.66), (0.68, 0.78)]),
+                # SignalConstraint 是“方案内部硬约束”。
+                # up.2.start - up.1.end >= 0.02 表示：
+                # 第 2 段上行绿灯开始，至少比第 1 段结束晚 0.02 个周期。
                 signal_constraints=[
                     SignalConstraint(
                         terms={"up.2.start": 1.0, "up.1.end": -1.0},
@@ -79,6 +135,9 @@ def build_window_range_case() -> Arterial:
                         name="下行两段之间至少保留 0.02 周期间隔",
                     ),
                 ],
+                # SignalLoss 是“方案内部软损失”。
+                # 它希望 down.1.start 落在 0.28~0.34 之间；
+                # 太早或太晚都会产生 intersection_loss。
                 signal_losses=[
                     SignalLoss(
                         terms={"down.1.start": 1.0},
@@ -102,12 +161,16 @@ def build_window_range_case() -> Arterial:
                 },
             ),
         ],
+        # I3 也有两个候选方案：
+        # - baseline：上下行各 1 段；
+        # - split_balanced：上下行各 2 段，并带方案内部约束/软损失。
         "I3": [
             SignalPlan(
                 name="baseline",
                 up_segments=make_windows([(0.29, 0.68)]),
                 down_segments=make_windows([(0.33, 0.82)]),
             ),
+            # split_balanced 同样是多段方案。
             SignalPlan(
                 name="split_balanced",
                 up_segments=make_windows([(0.27, 0.40), (0.42, 0.55)]),
@@ -138,6 +201,7 @@ def build_window_range_case() -> Arterial:
                 ],
             ),
         ],
+        # I4 只有一个 baseline 方案。
         "I4": [
             SignalPlan(
                 name="baseline",
@@ -146,6 +210,11 @@ def build_window_range_case() -> Arterial:
             ),
         ],
     }
+    # 把上面的方案组装成一个 Arterial：
+    # - cycle：公共信号周期，90s；
+    # - intersections：路口名 -> Intersection；
+    # - segments：物理路段，给出上下行长度和速度；
+    # - order：路口/路段交替顺序，例如 I1, S12, I2, S23, ...
     return Arterial(
         cycle=CYCLE,
         intersections={
@@ -164,7 +233,21 @@ def build_window_range_case() -> Arterial:
 
 
 def build_objective() -> ObjectiveConfig:
-    """函数名：build_objective；参数：无；返回值：ObjectiveConfig；异常：ValueError。"""
+    """配置 Stage 1 / Stage 2 共用的绿波带目标。
+
+    这里使用一个 SumGroup，也就是加权和：
+
+    - up.global=0.6：
+        奖励所有上行全局 band；
+    - down.seg2=0.4：
+        奖励下行第 2 个局部路段对应的 2 路口窗口带；
+        在 4 路口干线里，seg2 对应 I3-I4 这一段。
+    - down.win3@I2-I4=1.6：
+        奖励从 I2 到 I4 的 3 路口局部窗口带；
+        这是本示例重点观察的局部带。
+
+    权重越大，求解器越优先把带宽分配给对应的 band。
+    """
     return ObjectiveConfig(sum_groups=[SumGroup({
         "up.global": 0.6,
         "down.seg2": 0.4,
@@ -173,7 +256,22 @@ def build_objective() -> ObjectiveConfig:
 
 
 def build_margin() -> BandMarginConfig:
-    """硬边距保证不贴边，软边距进一步追求居中。"""
+    """配置硬边距和软边距。
+
+    - hard_margin_*：
+        缩小有效绿灯窗口，绿波带不能贴住窗口边缘；
+        Stage 1 和 Stage 2 都生效。
+    - soft_margin_*：
+        Stage 2 额外希望带子离边缘更远；
+        如果不够远，会产生 band_loss。
+    - penalty_*：
+        soft margin 损失的惩罚权重。
+
+    当前配置：
+    - 硬边距 1% 周期；
+    - 软边距 3% 周期；
+    - 上下行惩罚都是 1.0。
+    """
     return BandMarginConfig(
         hard_margin_up=0.01,
         hard_margin_down=0.01,
@@ -185,24 +283,56 @@ def build_margin() -> BandMarginConfig:
 
 
 def main() -> None:
-    """函数名：main；参数：无；返回值：无；异常：RuntimeError。"""
+    """完整示例入口：Stage 1 -> Stage 2 -> 迭代两阶段。
+
+    整体顺序：
+
+    1. 构造 4 路口干线；
+    2. 配置目标、边距；
+    3. 跑 Stage 1，得到方案选择 + 固定窗口带宽 + 所有局部窗口带；
+    4. 导出 Stage 1 JSON / 时空图；
+    5. 跑 Stage 2，固定 Stage 1 选择，只微调端点；
+    6. 导出 Stage 2 JSON / 时空图；
+    7. 跑迭代两阶段，直到窗口分配稳定或进入循环；
+    8. 导出迭代 JSON / 时空图，并打印每轮结果。
+    """
+    # 第 1 步：构造干线和边距配置。
     arterial = build_window_range_case()
     margin = build_margin()
+    # 第 2 步：创建 Stage 1 求解器。
+    # - config：目标函数；
+    # - up_global_output=True：上行带宽摘要按“所有 band 求和”输出；
+    # - down_global_output=False：下行摘要仍按逐路段宽度输出；
+    # - margin：Stage 1 只使用其中的硬边距。
     solver = SegmentedBandSolver(
         config=build_objective(),
         up_global_output=True,
         down_global_output=False,
         margin=margin,
     )
+    # 第 3 步：运行 Stage 1。
+    # Stage 1 会：
+    # 1) 选择每个路口的方案；
+    # 2) 为每条 band 在每个路口选择绿灯窗口；
+    # 3) 在固定窗口下最大化目标带宽；
+    # 4) 求解后自动补齐所有方向、所有长度的 window_band_ranges。
     solution = solver.solve(arterial)
     if solution.status != "optimal":
         raise RuntimeError(f"unexpected solver status: {solution.status}")
 
+    # 第 4 步：读取重点局部窗口带 down.win3@I2-I4。
+    # window_band_ranges[key] 里每个实例包含：
+    # - direction / band_no / bandwidth
+    # - intersections
+    # - time_min / time_max
+    # - intersection_ranges：每个路口的起止时间
     focus_key = "down.win3@I2-I4"
     focus_ranges = solution.window_band_ranges.get(focus_key, [])
     if not focus_ranges:
         raise RuntimeError(f"{focus_key} was not generated")
 
+    # 第 5 步：导出 Stage 1 结果。
+    # to_dict() 会把 Solution 变成普通 dict，方便 json.dumps。
     output_dir = Path(__file__).resolve().parent
     json_path = output_dir / "window_band_ranges_case_output.json"
     image_path = output_dir / "window_band_ranges_case_time_space.png"
@@ -210,6 +340,10 @@ def main() -> None:
         json.dumps(solution.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    # 画 Stage 1 时空图：
+    # - 红条表示红灯；
+    # - 绿色条表示绿灯窗口；
+    # - 带子会根据 multi_band_starts / window_band_ranges 自动绘制。
     plot_time_space(
         arterial,
         solution,
@@ -234,14 +368,22 @@ def main() -> None:
     print(f"时空图已保存到 {image_path}")
 
     # ------------------------------------------------------------------
-    # Stage 2：读取 SignalPlan.metadata["term_bounds"]，在给定范围内微调段端点。
-    # Stage 1 使用固定窗口；只有 Stage 2 才会真正执行这里的上下界。
+    # Stage 2：固定 Stage 1 的选择，只微调绿灯窗口端点。
+    #
+    # Stage 1 使用的是固定绿灯窗口；
+    # Stage 2 会读取 SignalPlan.metadata["term_bounds"]，
+    # 在上/下界内移动端点 x，同时考虑：
+    # - SignalConstraint 硬约束；
+    # - SignalLoss 软损失；
+    # - hard_margin / soft_margin。
     # ------------------------------------------------------------------
     tuner = FullFlexiblePhaseTuneSolver(
         config=build_objective(),
         max_loops=3,
         margin=margin,
     )
+    # prior=solution：把 Stage 1 的选择（方案、窗口、band）固定下来。
+    # band_loss_weight=0.5：软边距损失在最终得分里的权重。
     tuned = tuner.solve(arterial, prior=solution, band_loss_weight=0.5)
     if tuned.status != "optimal":
         raise RuntimeError(f"unexpected stage2 status: {tuned.status}")
@@ -252,6 +394,7 @@ def main() -> None:
         encoding="utf-8",
     )
     tuned_image_path = output_dir / "window_band_ranges_case_stage2_time_space.png"
+    # Stage 2 时空图：可以看到端点被微调后，绿波带位置和宽度发生变化。
     plot_time_space(
         arterial,
         tuned,
@@ -266,6 +409,7 @@ def main() -> None:
 
     plan_name = tuned.plan_choices.get("I2")
     plan = arterial.intersections["I2"].plan_by_name(plan_name)
+    # 打印 Stage 2 实际的“名义值 -> 调整后值”，验证 term_bounds 是否生效。
     bounds = plan.metadata.get("term_bounds", {})
     if bounds:
         for term in sorted(bounds):
@@ -291,7 +435,13 @@ def main() -> None:
     print(f"Stage 2 时空图已保存到 {tuned_image_path}")
 
     # ------------------------------------------------------------------
-    # 迭代两阶段：不断把 Stage 2 调好的窗口写回 Stage 1，直到窗口分配稳定。
+    # 迭代两阶段：把 Stage 2 调好的窗口端点写回 Stage 1，再重新跑 Stage 1。
+    #
+    # 停止规则：
+    # - 窗口分配连续两轮相同 -> iterative_converged；
+    # - 窗口分配进入循环 -> 返回循环第一个解；
+    # - 达到 max_iterations -> 返回最后解；
+    # - 每轮 Stage 2 必须 optimal，否则抛 RuntimeError。
     # ------------------------------------------------------------------
     iterative_config = TwoStageConfig(
         band=BandObjectiveConfig(
@@ -302,6 +452,7 @@ def main() -> None:
         margin=margin,
         max_loops=3,
     )
+    # max_iterations=10：最多迭代 10 轮；通常几轮就会稳定。
     iterative_solver = IterativeTwoStageSolver(
         config=iterative_config,
         max_iterations=10,
@@ -310,6 +461,7 @@ def main() -> None:
     if not iterative.status.startswith("optimal"):
         raise RuntimeError(f"unexpected iterative status: {iterative.status}")
 
+    # 导出迭代最终结果，并绘制最终稳定窗口分配下的时空图。
     iterative_json_path = output_dir / "window_band_ranges_case_iterative_output.json"
     iterative_json_path.write_text(
         json.dumps(iterative.to_dict(), ensure_ascii=False, indent=2),
@@ -334,6 +486,7 @@ def main() -> None:
         f"band_score={iterative.band_score:.3f}, "
         f"intersection_loss={iterative.intersection_loss:.3f}"
     )
+    # history 保存每一轮成功的 Stage 2 结果，便于观察是否稳定。
     print("每轮 band_score / plan_choices:")
     for idx, item in enumerate(iterative_solver.history, start=1):
         print(
