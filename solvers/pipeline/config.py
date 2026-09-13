@@ -1,7 +1,7 @@
 """两阶段求解的统一配置对象。
 
-这个文件把之前散落在 TwoStageSolver / CompositeBandSolver /
-OneWayPrioritySolver / PhaseTuneSolver 参数里的配置收敛到 dataclass：
+这个文件把之前散落在 TwoStageSolver / FlexibleBandSolver /
+PhaseTuneSolver 参数里的配置收敛到 dataclass：
 
     TwoStageConfig
     ├── BandObjectiveConfig
@@ -15,16 +15,17 @@ OneWayPrioritySolver / PhaseTuneSolver 参数里的配置收敛到 dataclass：
 
 其中：
     band_score = band_objective - band_loss_weight * band_loss
-    intersection_loss = phase hinge + 软 LinearSpec slack
+    intersection_loss = 段级软损失 + 软 LinearSpec slack
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .objective_config import ObjectiveConfig
-from .phase import (AlignmentLossBuilder, ConstraintBuilder,
-                    PhaseLossBuilder)
+from ..core.objective import ObjectiveConfig
+from ..builders.signal_constraints import (AlignmentLossBuilder,
+                                           ConstraintBuilder,
+                                           SegmentLossBuilder)
 
 
 @dataclass
@@ -33,8 +34,11 @@ class BandObjectiveConfig:
 
     Attributes:
         mode: "global" 或 "oneway"。
+            影响 oneway 预设目标的构造以及 bandwidth 输出口径；
+            注意 AlignmentLossBuilder 不再受 mode 影响，始终只做上下行
+            全局带对齐。
         objective: ObjectiveConfig，定义 SumGroup / BalanceGroup。
-        alignment_builder: 绿波带对齐损失。
+        alignment_builder: 绿波带对齐损失（只处理上下行全局带）。
         band_loss_weight: alignment loss 的权重 λ。
     """
 
@@ -52,15 +56,17 @@ class BandObjectiveConfig:
 
 @dataclass
 class IntersectionLossConfig:
-    """交叉口/相位层损失配置。只在 Stage 2 使用。
+    """交叉口层损失配置。只在 Stage 2 使用。
 
     Attributes:
-        loss_builder: PhaseLossBuilder，相位 hinge loss。
+        loss_builder: SegmentLossBuilder，段级端点/段宽软损失。
         constraint_builder: ConstraintBuilder，硬/软 LinearSpec。
+        tunable_intersections: 可调节路口名单。如果为 None，则所有路口均可调节。
     """
 
-    loss_builder: PhaseLossBuilder | None = None
+    loss_builder: SegmentLossBuilder | None = None
     constraint_builder: ConstraintBuilder | None = None
+    tunable_intersections: set[str] | None = None
 
 
 @dataclass

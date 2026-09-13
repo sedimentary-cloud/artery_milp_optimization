@@ -1,7 +1,7 @@
 """Legacy MILP 求解器实现。
 
 注意：
-    当前推荐入口是 solvers/flexible_band_solver.py：
+    当前推荐入口是 solvers/stage1/flexible_band.py：
     - CompositeBandSolver  = FlexibleBandSolver(composite_config(...))
     - OneWayPrioritySolver = FlexibleBandSolver(oneway_config(...))
 
@@ -20,9 +20,9 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
-from ..models import Arterial, GreenWindow
-from ..solution import Solution
-from .base import Solver
+from ...models import Arterial, GreenWindow
+from ...solution import Solution
+from ..core.base import Solver
 
 
 def _widest_window(windows: list[GreenWindow]) -> GreenWindow:
@@ -481,4 +481,3 @@ class MaxBandMILPSolver(Solver):
 
     def solve(self, arterial: Arterial) -> Solution:
         raise NotImplementedError
-

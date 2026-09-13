@@ -25,8 +25,8 @@ GLOBAL_BAND_ZORDER = 3
 GLOBAL_UP_COLOR = "#4AC52E"
 GLOBAL_DOWN_COLOR = "#3077e2"
 
-WINDOW_BAND_ALPHA = 0.05
-WINDOW_BAND_ZORDER = 1.1
+WINDOW_BAND_ALPHA = 0.02
+WINDOW_BAND_ZORDER = 3.4
 # 兼容旧名字：没有方向信息的窗口 key 默认按下行处理。
 WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
 WINDOW_UP_COLOR = GLOBAL_UP_COLOR
@@ -47,6 +47,17 @@ def _band_facecolor(color: str, alpha: float) -> tuple[float, float, float, floa
 def _window_facecolor(color: str) -> tuple[float, float, float, float]:
     """窗口带面颜色：低透明度纯填充，不使用 hatch。"""
     return _band_facecolor(color, WINDOW_BAND_ALPHA)
+
+
+def _window_facecolor_by_span(color: str,
+                              span_k: int,
+                              max_window: int) -> tuple[float, float, float, float]:
+    """按窗口长度调整透明度：窗口越短，颜色越明显。"""
+    if max_window <= 2:
+        return _window_facecolor(color)
+    level = max(0.0, min(1.0, (max_window - span_k) / max(max_window - 2, 1)))
+    alpha = WINDOW_BAND_ALPHA + 0.12 * level
+    return _band_facecolor(color, alpha)
 
 
 def _positions(arterial: Arterial) -> list[float]:
@@ -81,6 +92,11 @@ def _time_max(arterial: Arterial, solution: Solution | None = None) -> float:
             + list(solution.bandwidth_down.values())
             + list(solution.window_bands.values())
         )
+        for width_map in getattr(solution, "multi_bandwidths", {}).values():
+            band_values.extend(width_map.values())
+        for direction_map in getattr(solution, "multi_window_bands", {}).values():
+            for segment_map in direction_map.values():
+                band_values.extend(segment_map.values())
         if band_values:
             band_max = max(band_values)
 
@@ -113,10 +129,12 @@ def plot_time_space(arterial: Arterial,
 
     C = arterial.cycle
     ints = arterial.intersection_order
+    names = [v.name for v in ints]
     pos = _positions(arterial)
 
     # 局部导入，避免 plotting 在包初始化阶段与 solvers 产生循环依赖。
-    from .solvers.phase import direction_phase_name, phase_start_times
+    from .solvers.builders.signal_constraints import (direction_phase_name,
+                                                      phase_start_times)
 
     # 最终显示区间从 0 开始；右边界动态计算。
     # 绘制周期仍从负值开始（k_min = -1），负时间部分会被 xlim 截断。
@@ -157,9 +175,37 @@ def plot_time_space(arterial: Arterial,
             except (TypeError, ValueError, KeyError):
                 pass
 
+        # 第二阶段段级优化后，优先使用 segment_times 反算各段绿灯窗。
+        if (
+            solution is not None
+            and inter.name in solution.segment_times
+        ):
+            st = solution.segment_times[inter.name]
+            up_windows_to_draw = []
+            down_windows_to_draw = []
+            for seg_idx in range(1, len(plan.up_windows) + 1):
+                s_key = f"up.{seg_idx}.start"
+                e_key = f"up.{seg_idx}.end"
+                if s_key in st and e_key in st:
+                    up_windows_to_draw.append(GreenWindow(float(st[s_key]) / C, float(st[e_key]) / C))
+            for seg_idx in range(1, len(plan.down_windows) + 1):
+                s_key = f"down.{seg_idx}.start"
+                e_key = f"down.{seg_idx}.end"
+                if s_key in st and e_key in st:
+                    down_windows_to_draw.append(GreenWindow(float(st[s_key]) / C, float(st[e_key]) / C))
+            if up_windows_to_draw:
+                win_up = up_windows_to_draw[min(
+                    int(solution.window_choices.get(inter.name, {}).get("up_window", 0)),
+                    len(up_windows_to_draw) - 1,
+                )]
+            if down_windows_to_draw:
+                win_dn = down_windows_to_draw[min(
+                    int(solution.window_choices.get(inter.name, {}).get("down_window", 0)),
+                    len(down_windows_to_draw) - 1,
+                )]
         # 第二阶段相位优化后，用 phase_times 反算选中方案的绿灯窗。
         # phase_start_times 会把 phase_lost_times 作为常数间隔计入。
-        if (solution is not None
+        elif (solution is not None
                 and inter.name in solution.phase_times
                 and plan.phases):
             pt = solution.phase_times[inter.name]
@@ -189,6 +235,26 @@ def plot_time_space(arterial: Arterial,
         # 需要绘制的绿灯窗口集合。
         # 有 phase_times 时，使用反算出的单窗口；否则绘制方案里的全部绿灯窗口。
         if (solution is not None
+                and inter.name in solution.segment_times):
+            up_windows_to_draw = [
+                GreenWindow(
+                    float(solution.segment_times[inter.name][f"up.{idx}.start"]) / C,
+                    float(solution.segment_times[inter.name][f"up.{idx}.end"]) / C,
+                )
+                for idx in range(1, len(plan.up_windows) + 1)
+                if f"up.{idx}.start" in solution.segment_times[inter.name]
+                and f"up.{idx}.end" in solution.segment_times[inter.name]
+            ]
+            down_windows_to_draw = [
+                GreenWindow(
+                    float(solution.segment_times[inter.name][f"down.{idx}.start"]) / C,
+                    float(solution.segment_times[inter.name][f"down.{idx}.end"]) / C,
+                )
+                for idx in range(1, len(plan.down_windows) + 1)
+                if f"down.{idx}.start" in solution.segment_times[inter.name]
+                and f"down.{idx}.end" in solution.segment_times[inter.name]
+            ]
+        elif (solution is not None
                 and inter.name in solution.phase_times
                 and plan.phases):
             up_windows_to_draw = [win_up]
@@ -219,20 +285,24 @@ def plot_time_space(arterial: Arterial,
         #   - 垂直位置分别贴近上行/下行灯条。
         wc = (solution.window_choices.get(inter.name)
               if solution is not None and solution.window_choices else None)
-        if wc and wc.get("up_phase"):
+        if wc and wc.get("up_segment"):
+            label_up_phase = wc["up_segment"]
+        elif wc and wc.get("up_phase"):
             label_up_phase = wc["up_phase"]
         else:
             try:
                 label_up_phase = direction_phase_name(plan, "up")
             except (ValueError, NotImplementedError):
-                label_up_phase = plan.up_phase
-        if wc and wc.get("down_phase"):
+                label_up_phase = None
+        if wc and wc.get("down_segment"):
+            label_down_phase = wc["down_segment"]
+        elif wc and wc.get("down_phase"):
             label_down_phase = wc["down_phase"]
         else:
             try:
                 label_down_phase = direction_phase_name(plan, "down")
             except (ValueError, NotImplementedError):
-                label_down_phase = plan.down_phase
+                label_down_phase = None
 
         phase_labels = []
         if label_up_phase:
@@ -262,10 +332,19 @@ def plot_time_space(arterial: Arterial,
     up_style = "global"
     down_style = "global"
     has_window_bands = False
+    has_multi_bands = False
+    has_multi_window_bands = False
+    global_range_entries = {"up": [], "down": []}
     if solution is not None:
         up_style = getattr(solution, "band_up_style", "global")
         down_style = getattr(solution, "band_down_style", "global")
         has_window_bands = bool(solution.window_bands)
+        has_multi_bands = bool(solution.multi_bandwidths)
+        has_multi_window_bands = bool(getattr(solution, "multi_window_bands", {}))
+        global_range_entries = {
+            "up": _global_window_range_entries(solution, "up", names),
+            "down": _global_window_range_entries(solution, "down", names),
+        }
 
     # 图例
     from matplotlib.patches import Patch
@@ -274,7 +353,9 @@ def plot_time_space(arterial: Arterial,
         Patch(facecolor="red", alpha=1.0, label="Red (Up)"),
         Patch(facecolor="darkorange", alpha=1.0, label="Red (Down)"),
     ]
-    if up_style == "global":
+    if solution is not None and (
+        up_style == "global" or has_multi_bands or global_range_entries["up"]
+    ):
         handles.append(Patch(
             facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
             edgecolor=GLOBAL_UP_COLOR,
@@ -282,13 +363,30 @@ def plot_time_space(arterial: Arterial,
             linewidth=BAND_HATCH_LINEWIDTH,
             label="Up Band",
         ))
-    if down_style == "global":
+    if solution is not None and (
+        down_style == "global" or has_multi_bands or global_range_entries["down"]
+    ):
         handles.append(Patch(
             facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
             edgecolor=GLOBAL_DOWN_COLOR,
             hatch=GLOBAL_DOWN_HATCH,
             linewidth=BAND_HATCH_LINEWIDTH,
             label="Down Band",
+        ))
+    if has_multi_bands:
+        handles.append(Patch(
+            facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
+            edgecolor=GLOBAL_UP_COLOR,
+            hatch=GLOBAL_UP_HATCH,
+            linewidth=BAND_HATCH_LINEWIDTH,
+            label="Up Multi-Bands",
+        ))
+        handles.append(Patch(
+            facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
+            edgecolor=GLOBAL_DOWN_COLOR,
+            hatch=GLOBAL_DOWN_HATCH,
+            linewidth=BAND_HATCH_LINEWIDTH,
+            label="Down Multi-Bands",
         ))
     if has_window_bands:
         handles.append(Patch(
@@ -301,11 +399,136 @@ def plot_time_space(arterial: Arterial,
             edgecolor="none",
             label="Window Bands (Down)",
         ))
+    if has_multi_window_bands:
+        handles.append(Patch(
+            facecolor=_window_facecolor(WINDOW_UP_COLOR),
+            edgecolor="none",
+            label="Multi Window Bands (Up)",
+        ))
+        handles.append(Patch(
+            facecolor=_window_facecolor(WINDOW_DOWN_COLOR),
+            edgecolor="none",
+            label="Multi Window Bands (Down)",
+        ))
     ax.legend(handles=handles, loc="lower right", fontsize=9)
 
     # --- 绿波带 ---
-    if solution is not None and solution.band_start_up:
-        names = [v.name for v in ints]
+    if solution is not None and has_multi_bands:
+        segs = arterial.segment_order
+        band_values = []
+        for width_map in solution.multi_bandwidths.values():
+            band_values.extend(width_map.values())
+        for direction_map in getattr(solution, "multi_window_bands", {}).values():
+            for segment_map in direction_map.values():
+                band_values.extend(segment_map.values())
+        max_band_width = max(band_values, default=0.0)
+        max_travel_time = max(
+            sum(seg.travel_time_up for seg in segs),
+            sum(seg.travel_time_down for seg in segs),
+        )
+        band_k_min = k_min - math.ceil((max_travel_time + max_band_width) / C)
+
+        for direction, color, hatch in (
+            ("up", GLOBAL_UP_COLOR, GLOBAL_UP_HATCH),
+            ("down", GLOBAL_DOWN_COLOR, GLOBAL_DOWN_HATCH),
+        ):
+            widths = solution.multi_bandwidths.get(direction, {})
+            starts = solution.multi_band_starts.get(direction, {})
+            fallback_global_by_segment = {
+                int(entry["segment_no"]): entry
+                for entry in global_range_entries.get(direction, [])
+                if entry.get("segment_no") is not None
+            }
+            for segment_no in sorted(widths):
+                width = float(widths[segment_no])
+                time_map = starts.get(segment_no, {})
+                if not time_map:
+                    continue
+                raw_times = [float(time_map[name]) for name in names]
+                t_series = _unwrap_multi_band_times(direction, raw_times, segs, C)
+                range_entries = []
+                for key, entries in getattr(solution, "window_band_ranges", {}).items():
+                    for entry in entries:
+                        if (
+                            entry.get("direction") == direction
+                            and int(entry.get("segment_no") or 0) == segment_no
+                        ):
+                            range_entries.append((key, entry))
+                if range_entries:
+                    ordered_range_entries = sorted(
+                        range_entries,
+                        key=lambda item: (
+                            -len(item[1].get("intersections", [])),
+                            names.index(item[1]["intersections"][0]) if item[1].get("intersections") else 0,
+                        ),
+                    )
+                    for key, entry in ordered_range_entries:
+                        intersections = entry.get("intersections", [])
+                        if not intersections:
+                            continue
+                        k = len(intersections)
+                        if k > max_band_window:
+                            continue
+                        if k >= len(names):
+                            continue
+                        bw = float(entry.get("bandwidth", 0.0))
+                        if bw <= 0:
+                            continue
+                        ps = [pos[names.index(name)] for name in intersections]
+                        ts = [
+                            float(entry["intersection_ranges"][name]["start"])
+                            for name in intersections
+                        ]
+                        for kk in range(band_k_min, k_max + 1):
+                            t_shifted = [t + kk * C for t in ts]
+                            ax.add_patch(_poly_band(
+                                ps, t_shifted, bw,
+                                facecolor=_window_facecolor_by_span(color, k, max_band_window),
+                                edgecolor="none",
+                                zorder=WINDOW_BAND_ZORDER,
+                            ))
+                if width > 0:
+                    alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (segment_no - 1))
+                    for k in range(band_k_min, k_max + 1):
+                        shift = k * C
+                        for i in range(len(segs)):
+                            ax.add_patch(_quad(
+                                pos[i],
+                                pos[i + 1],
+                                t_series[i] + shift,
+                                t_series[i + 1] + shift,
+                                width,
+                                facecolor=_band_facecolor(color, alpha),
+                                edgecolor=color,
+                                linewidth=BAND_HATCH_LINEWIDTH,
+                                hatch=hatch,
+                                zorder=GLOBAL_BAND_ZORDER,
+                            ))
+                    continue
+
+                fallback_entry = fallback_global_by_segment.get(segment_no)
+                if fallback_entry is None:
+                    continue
+                ts = [
+                    float(fallback_entry["intersection_ranges"][name]["start"])
+                    for name in names
+                ]
+                bw = float(fallback_entry["bandwidth"])
+                alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (segment_no - 1))
+                for k in range(band_k_min, k_max + 1):
+                    t_shifted = [t + k * C for t in ts]
+                    ax.add_patch(_poly_band(
+                        pos,
+                        t_shifted,
+                        bw,
+                        facecolor=_band_facecolor(color, alpha),
+                        edgecolor=color,
+                        linewidth=BAND_HATCH_LINEWIDTH,
+                        hatch=hatch,
+                        zorder=GLOBAL_BAND_ZORDER,
+                    ))
+
+    elif solution is not None and solution.band_start_up:
         segs = arterial.segment_order
 
         # 带前沿的绝对时刻：沿行驶方向按行驶时间递推（不再 mod 周期）
@@ -334,62 +557,96 @@ def plot_time_space(arterial: Arterial,
         # ============================================================
         # 图层 1：全局绿波带
         # ============================================================
-        for k in range(band_k_min, k_max + 1):
-            shift = k * C
-            for i, seg in enumerate(segs):
-                bu = solution.bandwidth_up.get(seg.name, 0.0)
-                bd = solution.bandwidth_down.get(seg.name, 0.0)
-                if up_style == "global" and bu > 0:
-                    ax.add_patch(_quad(
-                        pos[i], pos[i + 1],
-                        tU[i] + shift, tU[i + 1] + shift, bu,
-                        facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
-                        edgecolor=GLOBAL_UP_COLOR,
-                        linewidth=BAND_HATCH_LINEWIDTH,
-                        hatch=GLOBAL_UP_HATCH,
-                        zorder=GLOBAL_BAND_ZORDER,
-                    ))
-                if down_style == "global" and bd > 0:
-                    ax.add_patch(_quad(
-                        pos[i], pos[i + 1],
-                        tD[i] + shift, tD[i + 1] + shift, bd,
-                        facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
-                        edgecolor=GLOBAL_DOWN_COLOR,
-                        linewidth=BAND_HATCH_LINEWIDTH,
-                        hatch=GLOBAL_DOWN_HATCH,
-                        zorder=GLOBAL_BAND_ZORDER,
-                    ))
+        global_specs: dict[str, tuple[list[float], float, str, str] | None] = {
+            "up": None,
+            "down": None,
+        }
+        if up_style == "global" and solution.bandwidth_up:
+            bu = max(solution.bandwidth_up.values(), default=0.0)
+            if bu > 0:
+                global_specs["up"] = (tU, bu, GLOBAL_UP_COLOR, GLOBAL_UP_HATCH)
+        if down_style == "global" and solution.bandwidth_down:
+            bd = max(solution.bandwidth_down.values(), default=0.0)
+            if bd > 0:
+                global_specs["down"] = (tD, bd, GLOBAL_DOWN_COLOR, GLOBAL_DOWN_HATCH)
+
+        for direction, color, hatch in (
+            ("up", GLOBAL_UP_COLOR, GLOBAL_UP_HATCH),
+            ("down", GLOBAL_DOWN_COLOR, GLOBAL_DOWN_HATCH),
+        ):
+            spec = global_specs[direction]
+            if spec is None and global_range_entries[direction]:
+                entry = global_range_entries[direction][0]
+                spec = (
+                    [
+                        float(entry["intersection_ranges"][name]["start"])
+                        for name in names
+                    ],
+                    float(entry["bandwidth"]),
+                    color,
+                    hatch,
+                )
+            if spec is None:
+                continue
+            ts, bw, color, hatch = spec
+            for k in range(band_k_min, k_max + 1):
+                t_shifted = [t + k * C for t in ts]
+                ax.add_patch(_poly_band(
+                    pos,
+                    t_shifted,
+                    bw,
+                    facecolor=_band_facecolor(color, GLOBAL_BAND_ALPHA),
+                    edgecolor=color,
+                    linewidth=BAND_HATCH_LINEWIDTH,
+                    hatch=hatch,
+                    zorder=GLOBAL_BAND_ZORDER,
+                ))
 
         # ============================================================
         # 图层 2：窗口绿波带（win2 两两路口、win3 三个一组……）
         # ============================================================
         if has_window_bands:
-            # 按方向 + 窗口大小分组；up 用 tU，down 用 tD。
-            grouped: dict[str, dict[int, list[tuple[int, float]]]] = {
-                "up": {},
-                "down": {},
-            }
-            for key, bw in solution.window_bands.items():
-                direction, k, j = _parse_window_key(key, names)
-                if (direction in grouped and k is not None
-                        and k <= max_band_window and bw > 0):
-                    grouped[direction].setdefault(k, []).append((j, bw))
+            grouped_entries: dict[str, list[dict[str, object]]] = {"up": [], "down": []}
+            for key, entries in getattr(solution, "window_band_ranges", {}).items():
+                for entry in entries:
+                    direction = entry.get("direction")
+                    if direction in grouped_entries:
+                        grouped_entries[direction].append(entry)
 
             for direction in ("up", "down"):
-                t_series = tU if direction == "up" else tD
                 color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
-                for k in sorted(grouped[direction], reverse=True):
-                    for j, bw in grouped[direction][k]:
-                        ts = [t_series[j + i] for i in range(k)]
-                        ps = [pos[j + i] for i in range(k)]
-                        for kk in range(band_k_min, k_max + 1):
-                            t_shifted = [t + kk * C for t in ts]
-                            ax.add_patch(_poly_band(
-                                ps, t_shifted, bw,
-                                facecolor=_window_facecolor(color),
-                                edgecolor="none",
-                                zorder=WINDOW_BAND_ZORDER,
-                            ))
+                ordered_entries = sorted(
+                    grouped_entries[direction],
+                    key=lambda entry: (
+                        -len(entry.get("intersections", [])),
+                        names.index(entry["intersections"][0]) if entry.get("intersections") else 0,
+                    ),
+                )
+                for entry in ordered_entries:
+                    intersections = entry.get("intersections", [])
+                    if not intersections:
+                        continue
+                    k = len(intersections)
+                    if k > max_band_window:
+                        continue
+                    if k >= len(names):
+                        continue
+                    bw = float(entry.get("bandwidth", 0.0))
+                    if bw <= 0:
+                        continue
+                    ps = [pos[names.index(name)] for name in intersections]
+                    ts = [
+                        float(entry["intersection_ranges"][name]["start"])
+                        for name in intersections
+                    ]
+                    for kk in range(band_k_min, k_max + 1):
+                        t_shifted = [t + kk * C for t in ts]
+                        ax.add_patch(_poly_band(
+                            ps, t_shifted, bw,
+                            facecolor=_window_facecolor_by_span(color, k, max_band_window),
+                            edgecolor="none",
+                            zorder=WINDOW_BAND_ZORDER,
+                        ))
 
     ax.set_xlim(t_min, t_max)
     ax.set_ylim(-0.05 * pos[-1], 1.05 * pos[-1])
@@ -413,6 +670,103 @@ def plot_time_space(arterial: Arterial,
                 zorder=25,
                 bbox=dict(boxstyle="round,pad=0.4",
                           facecolor="white", edgecolor="black", alpha=0.85))
+
+    if save_path:
+        ax.figure.savefig(save_path, dpi=150, bbox_inches="tight")
+        if close_after_save:
+            plt.close(ax.figure)
+    return ax
+
+
+def plot_pareto_frontier(
+    frontier: list[tuple[float, float, float, Solution]],
+    save_path: str | None = None,
+    ax: plt.Axes | None = None,
+    title: str = "Pareto Frontier",
+    annotate: bool = True,
+    knee_point: tuple[float, float, Solution] | None = None,
+) -> plt.Axes:
+    """绘制“交叉口损失 vs 干线目标”的 Pareto 前沿。
+
+    参数：
+        frontier:
+            `EpsilonConstraintRunner.run` 返回的点集，
+            每个元素形如 `(eps, corridor_metric, intersection_loss, solution)`。
+        save_path:
+            若给定则保存图片。
+        ax:
+            复用已有坐标轴。
+        title:
+            图标题。
+        annotate:
+            是否标注点编号。
+        knee_point:
+            可选拐点，形如 `(corridor_metric, intersection_loss, solution)`。
+    """
+    close_after_save = ax is None
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8.5, 5.5))
+
+    if not frontier:
+        ax.set_title(title)
+        ax.set_xlabel("Intersection Loss")
+        ax.set_ylabel("Corridor Objective")
+        ax.text(
+            0.5,
+            0.5,
+            "No Pareto points",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            fontsize=12,
+        )
+        if save_path:
+            ax.figure.savefig(save_path, dpi=150, bbox_inches="tight")
+            if close_after_save:
+                plt.close(ax.figure)
+        return ax
+
+    ordered = sorted(frontier, key=lambda item: item[2])
+    xs = [float(item[2]) for item in ordered]
+    ys = [float(item[1]) for item in ordered]
+
+    ax.plot(xs, ys, color="#3077e2", linewidth=1.6, zorder=2)
+    ax.scatter(xs, ys, color="#3077e2", s=36, zorder=3)
+
+    if annotate:
+        for idx, (loss, value) in enumerate(zip(xs, ys), start=1):
+            ax.annotate(
+                f"P{idx}",
+                (loss, value),
+                textcoords="offset points",
+                xytext=(6, 6),
+                fontsize=8,
+            )
+
+    if knee_point is not None:
+        knee_value, knee_loss, _ = knee_point
+        ax.scatter(
+            [float(knee_loss)],
+            [float(knee_value)],
+            color="#d62728",
+            s=70,
+            zorder=4,
+            label="Knee Point",
+        )
+        ax.annotate(
+            "Knee",
+            (float(knee_loss), float(knee_value)),
+            textcoords="offset points",
+            xytext=(8, -12),
+            fontsize=9,
+            color="#d62728",
+        )
+        ax.legend(loc="best")
+
+    ax.set_title(title)
+    ax.set_xlabel("Intersection Loss")
+    ax.set_ylabel("Corridor Objective")
+    ax.grid(alpha=0.3, zorder=0)
 
     if save_path:
         ax.figure.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -469,3 +823,54 @@ def _parse_window_key(key: str, names: list[str]) -> tuple[str | None, int | Non
         return direction, k, names.index(first)
     except (ValueError, IndexError):
         return None, None, None
+
+
+def _global_window_key(direction: str, names: list[str]) -> str:
+    """全走廊独立带对应的窗口 key。"""
+    return f"{direction}.win{len(names)}@{names[0]}-{names[-1]}"
+
+
+def _global_window_range_entries(solution: Solution | None,
+                                 direction: str,
+                                 names: list[str]) -> list[dict[str, object]]:
+    """返回某方向整走廊独立全局带的所有实例。"""
+    if solution is None or not getattr(solution, "window_band_ranges", None):
+        return []
+    key = _global_window_key(direction, names)
+    entries = solution.window_band_ranges.get(key, [])
+    return [
+        entry for entry in entries
+        if entry.get("direction") == direction
+        and entry.get("intersections") == names
+        and float(entry.get("bandwidth", 0.0)) > 0.0
+    ]
+
+
+def _unwrap_multi_band_times(direction: str,
+                             raw_times: list[float],
+                             segs,
+                             cycle: float) -> list[float]:
+    """按传播方向把模周期时刻解包为绝对时刻序列。
+
+    multi_band_starts 存的是每个路口的周期内时刻 [0, C]。绘图时若直接把这些
+    值连线，跨周期边界的带会出现反向倾斜。这里按相邻路段旅行时间逐段解包：
+
+    - 上行：next ~= prev + tau_up
+    - 下行：next ~= prev - tau_down
+    """
+    if not raw_times:
+        return []
+
+    series = [float(raw_times[0])]
+    for i, seg in enumerate(segs):
+        raw_next = float(raw_times[i + 1])
+        if direction == "up":
+            target = series[-1] + seg.travel_time_up
+        elif direction == "down":
+            target = series[-1] - seg.travel_time_down
+        else:
+            raise ValueError(f"unknown direction: {direction}")
+
+        shift = round((target - raw_next) / cycle)
+        series.append(raw_next + shift * cycle)
+    return series

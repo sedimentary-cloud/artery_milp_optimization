@@ -1,0 +1,7 @@
+# 核心数值计算与优化求解
+numpy>=1.20.0
+scipy>=1.9.0      # 必须包含 milp 求解器支持
+matplotlib>=3.5.0  # 用于时空图可视化
+
+# 类型提示与开发辅助 (Python 3.8+ 内置支持，但推荐保持环境最新)
+typing-extensions; python_version < "3.8"

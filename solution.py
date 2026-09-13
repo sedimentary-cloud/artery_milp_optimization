@@ -32,12 +32,25 @@ class Solution:
     band_start_up: dict[str, float] = field(default_factory=dict)
     band_start_down: dict[str, float] = field(default_factory=dict)
     # 窗口带宽：key 形如 "up.win3@I1-I3" / "down.win3@I1-I3"，
-    # value 为该相邻路口组的公共带宽（秒）。
+    # value 为该子走廊独立求解得到的局部最优带宽（秒）。
     window_bands: dict[str, float] = field(default_factory=dict)
+    # 窗口带时间范围：key -> [range_entry, ...]。
+    # 每个 entry 描述一个局部绿波带实例在各路口上的起止时间，
+    # 适合直接用于绘图、导出和下游分析。
+    window_band_ranges: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     # 相位时长：路口名 -> 相位名 -> 秒（第二阶段优化后回填）
     phase_times: dict[str, dict[str, float]] = field(default_factory=dict)
+    # 段级时刻：路口名 -> "up.1.start"/"down.2.end" -> 秒。
+    segment_times: dict[str, dict[str, float]] = field(default_factory=dict)
     # 窗口选择：路口名 -> {"plan": 方案名, "up_window": 下标, "down_window": 下标}
     window_choices: dict[str, dict[str, int | str]] = field(default_factory=dict)
+    # 多段绿波带：方向 -> 段号(1-based) -> 全走廊公共带宽（秒）。
+    multi_bandwidths: dict[str, dict[int, float]] = field(default_factory=dict)
+    # 多段绿波带起点：方向 -> 段号(1-based) -> 路口名 -> 到达时刻（秒）。
+    multi_band_starts: dict[str, dict[int, dict[str, float]]] = field(default_factory=dict)
+    # 多段窗口带宽：方向 -> 段号(1-based) -> "up.win3@I1-I3" -> 秒。
+    # 语义同样是“该段号在对应子走廊上的独立局部最优带宽”。
+    multi_window_bands: dict[str, dict[int, dict[str, float]]] = field(default_factory=dict)
     # ---- 绿波带层目标 ----
     # band_objective: ObjectiveConfig 的 SumGroup + BalanceGroup 收益
     # band_loss:      绿波带层损失，例如 AlignmentLoss
@@ -81,8 +94,13 @@ class Solution:
             "band_start_up": self.band_start_up,
             "band_start_down": self.band_start_down,
             "window_bands": self.window_bands,
+            "window_band_ranges": self.window_band_ranges,
             "phase_times": self.phase_times,
+            "segment_times": self.segment_times,
             "window_choices": self.window_choices,
+            "multi_bandwidths": self.multi_bandwidths,
+            "multi_band_starts": self.multi_band_starts,
+            "multi_window_bands": self.multi_window_bands,
             "band_objective": self.band_objective,
             "band_loss": self.band_loss,
             "band_score": self.band_score,

@@ -1,4 +1,11 @@
-"""FlexibleBandSolver：读取 BandModel + ObjectiveConfig 组装 MILP。
+"""FlexibleBandSolver：旧版第一阶段求解器。
+
+说明：
+--------
+当前主路径已切换到 `SegmentedBandSolver`，本文件保留主要用于：
+- 兼容旧调用；
+- 保留 `composite_config / oneway_config` 这类目标配置工厂；
+- 作为 legacy 参考实现。
 
 数学模型
 --------
@@ -40,15 +47,17 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
 
-from ..models import Arterial
-from ..solution import Solution
-from .band_model import BandModel, fill_solution_window_bands
-from .base import Solver
-from .objective_config import BalanceGroup, ObjectiveConfig, SumGroup
+from ...models import Arterial
+from ...solution import Solution
+from ..builders.signal_constraints import scale_linear_spec
+from ..core.band_lattice import (BandModel, fill_solution_window_band_ranges,
+                                 fill_solution_window_bands)
+from ..core.base import Solver
+from ..core.objective import BalanceGroup, ObjectiveConfig, SumGroup
 
 
 class FlexibleBandSolver(Solver):
-    """根据 ObjectiveConfig 求解双向绿波带宽组合目标。"""
+    """根据 ObjectiveConfig 求解双向绿波带宽组合目标的 legacy 实现。"""
 
     name = "flexible-band"
 
@@ -153,6 +162,19 @@ class FlexibleBandSolver(Solver):
         band_offset = cur              # 带格变量的起始下标
         cur += band_model.nvar         # 为所有 B 变量预留位置
 
+        local_specs = _local_objective_specs(self.config, n)
+        local_t_idx: dict[tuple[str, int, int], list[int]] = {}
+        local_loop_idx: dict[tuple[str, int, int], list[int]] = {}
+        local_band_idx: dict[tuple[str, int, int], int] = {}
+        for direction, k, start in local_specs:
+            local_key = (direction, k, start)
+            local_t_idx[local_key] = list(range(cur, cur + k))
+            cur += k
+            local_loop_idx[local_key] = list(range(cur, cur + k - 1))
+            cur += k - 1
+            local_band_idx[local_key] = cur
+            cur += 1
+
         # 每个 BalanceGroup 需要一个“组内最小值”变量：
         #     B_g <= 每个成员
         # 最大化 B_g 时，它自动变成成员里的最小值。
@@ -217,18 +239,26 @@ class FlexibleBandSolver(Solver):
             # 第一阶段没有相位变量，相位名直接忽略。
             return None
 
+        def objective_band_vars(key_text: str) -> list[int]:
+            band = _parse_band_key(key_text, n)
+            if key_text.endswith(".global"):
+                return [_band_var(band_model, band, band_offset)]
+            local_key = (band.direction, band.k, band.start)
+            if local_key not in local_band_idx:
+                return []
+            return [local_band_idx[local_key]]
+
         # 每个元素：(原始 LinearSpec, [(变量下标, 系数), ...], slack 变量下标)
         band_loss_resolved: list[tuple[object, list[tuple[int, float]], int]] = []
         if alignment_builder is not None:
             # 无论权重是否为 0，都解析并回填真实 band_loss；
             # 权重为 0 时只是不把 loss 放进目标函数。
-            align_mode = "oneway" if self.down_style == "local" else "global"
-            align_specs = alignment_builder.to_linear_specs(
-                align_mode, int_names, seg_names
-            )
+            # AlignmentLossBuilder 现在只处理上下行全局带对齐。
+            align_specs = alignment_builder.to_linear_specs(int_names)
             for spec in align_specs:
+                scaled_spec = scale_linear_spec(spec, C)
                 terms: list[tuple[int, float]] = []
-                for name, coef in spec.terms.items():
+                for name, coef in scaled_spec.terms.items():
                     var = resolve_band_loss_name(name)
                     if var is not None:
                         terms.append((var, coef))
@@ -236,7 +266,7 @@ class FlexibleBandSolver(Solver):
                     continue
                 slack = cur
                 cur += 1
-                band_loss_resolved.append((spec, terms, slack))
+                band_loss_resolved.append((scaled_spec, terms, slack))
 
         # 到这里所有变量都排完了，nvar 是变量总数。
         nvar = cur
@@ -249,9 +279,11 @@ class FlexibleBandSolver(Solver):
         # SumGroup：每个带标识直接按权重加进目标。
         for group in self.config.sum_groups:                       # 遍历每个加权和组
             for key, weight in group.terms.items():                # 取出本组里的“带标识 -> 权重”
-                band = _parse_band_key(key, n)                     # 把字符串解析成 BandKey(direction, k, start)
-                var = _band_var(band_model, band, band_offset)     # 找到这个带对应的 MILP 变量下标
-                c[var] += -weight                                  # 目标原本是 +weight，但 milp 求最小值，所以取负
+                vars_found = objective_band_vars(key)
+                if not vars_found:
+                    raise ValueError(f"目标项 {key} 没有可用变量")
+                for var in vars_found:
+                    c[var] += -weight                              # 目标原本是 +weight，但 milp 求最小值，所以取负
 
         # BalanceGroup：组 min 变量按组权重加负号；
         # 再给每个成员加一个很小的 ε 托底项，避免均衡达标后其他带摆烂。
@@ -260,9 +292,11 @@ class FlexibleBandSolver(Solver):
             c[gvar] += -group.weight                               # 最大化 B_g，所以目标系数取 -weight
             if group.eps > 0:                                      # 如果开启了 ε 托底
                 for member in group.members:                       # 遍历该均衡组的所有成员带
-                    band = _parse_band_key(member, n)              # 解析成员带标识
-                    var = _band_var(band_model, band, band_offset) # 找到成员带对应的变量下标
-                    c[var] += -group.weight * group.eps            # 给成员带加一个很小的正权重，防止“只均衡、不榨总量”
+                    vars_found = objective_band_vars(member)
+                    if not vars_found:
+                        raise ValueError(f"均衡项 {member} 没有可用变量")
+                    for var in vars_found:
+                        c[var] += -group.weight * group.eps        # 给成员带加一个很小的正权重，防止“只均衡、不榨总量”
 
         # 绿波带层损失：
         #   目标 = max band_objective - band_loss_weight * band_loss
@@ -283,6 +317,11 @@ class FlexibleBandSolver(Solver):
         ub[idx_bD:idx_bD + m] = C
         for gvar in balance_vars.values():
             ub[gvar] = C
+        for local_key, band_var in local_band_idx.items():
+            ub[local_t_idx[local_key]] = C
+            lb[local_loop_idx[local_key]] = -self.max_loops
+            ub[local_loop_idx[local_key]] = self.max_loops
+            ub[band_var] = C
         for row in idx_opt:
             ub[row] = 1.0
         for _, _, slack in band_loss_resolved:
@@ -304,6 +343,8 @@ class FlexibleBandSolver(Solver):
         # 再配合 bounds 里的 0 <= δ <= 1，就变成二进制变量。
         for row in idx_opt:
             integrality[row] = 1
+        for local_key in local_band_idx:
+            integrality[local_loop_idx[local_key]] = 1
 
         rows, lo_list, hi_list = [], [], []
 
@@ -411,6 +452,47 @@ class FlexibleBandSolver(Solver):
                     for i in range(j, j + k - 1):
                         add_row({B_var: 1.0, b_idx + i: -1.0}, -np.inf, 0.0)
 
+        for local_key, band_var in local_band_idx.items():
+            direction, k, start = local_key
+            t_vars = local_t_idx[local_key]
+            loop_vars = local_loop_idx[local_key]
+            local_segs = segs[start:start + k - 1]
+            for offset, seg in enumerate(local_segs):
+                if direction == "up":
+                    add_row(
+                        {t_vars[offset + 1]: 1.0, t_vars[offset]: -1.0, loop_vars[offset]: -C},
+                        seg.travel_time_up,
+                        seg.travel_time_up,
+                    )
+                else:
+                    add_row(
+                        {t_vars[offset]: 1.0, t_vars[offset + 1]: -1.0, loop_vars[offset]: -C},
+                        seg.travel_time_down,
+                        seg.travel_time_down,
+                    )
+
+            for offset, abs_idx in enumerate(range(start, start + k)):
+                if direction == "up":
+                    start_terms = {
+                        idx_opt[abs_idx][o]: wu.start * C
+                        for o, (_, _, _, wu, _) in enumerate(options[abs_idx])
+                    }
+                    end_terms = {
+                        idx_opt[abs_idx][o]: -wu.end * C
+                        for o, (_, _, _, wu, _) in enumerate(options[abs_idx])
+                    }
+                else:
+                    start_terms = {
+                        idx_opt[abs_idx][o]: wd.start * C
+                        for o, (_, _, _, _, wd) in enumerate(options[abs_idx])
+                    }
+                    end_terms = {
+                        idx_opt[abs_idx][o]: -wd.end * C
+                        for o, (_, _, _, _, wd) in enumerate(options[abs_idx])
+                    }
+                add_row({t_vars[offset]: -1.0, **start_terms}, -np.inf, 0.0)
+                add_row({t_vars[offset]: 1.0, band_var: 1.0, **end_terms}, -np.inf, 0.0)
+
         # ============================================================
         # 约束 5：均衡组取 min
         #
@@ -421,9 +503,11 @@ class FlexibleBandSolver(Solver):
         for gidx, group in enumerate(self.config.balance_groups):
             gvar = balance_vars[gidx]
             for member in group.members:
-                band = _parse_band_key(member, n)
-                var = _band_var(band_model, band, band_offset)
-                add_row({gvar: 1.0, var: -1.0}, -np.inf, 0.0)
+                vars_found = objective_band_vars(member)
+                if not vars_found:
+                    raise ValueError(f"均衡项 {member} 没有可用变量")
+                for var in vars_found:
+                    add_row({gvar: 1.0, var: -1.0}, -np.inf, 0.0)
 
         # 绿波带层对齐损失约束：
         #   sense <= : expr - slack <= rhs
@@ -470,7 +554,8 @@ class FlexibleBandSolver(Solver):
         # 后处理：用最终带前沿 t 和最终绿灯窗，重新计算
         # 两个方向、k=2..5 的可行窗口绿波带。
         # 这不修改任何优化变量或目标值，只填充 Solution.window_bands。
-        fill_solution_window_bands(sol, arterial, max_window=5)
+        fill_solution_window_bands(sol, arterial, max_window=5, max_loops=self.max_loops)
+        fill_solution_window_band_ranges(sol, arterial)
 
         # 回填绿波带层损失和目标值。
         band_loss = 0.0
@@ -484,10 +569,22 @@ class FlexibleBandSolver(Solver):
                 violation = 0.0
             band_loss += spec.penalty * violation
 
-        band_score = -float(res.fun)
+        band_objective = 0.0
+        for group in self.config.sum_groups:
+            for key, weight in group.terms.items():
+                band_objective += weight * sum(float(x[var]) for var in objective_band_vars(key))
+        for gidx, group in enumerate(self.config.balance_groups):
+            band_objective += group.weight * float(x[balance_vars[gidx]])
+            if group.eps > 0:
+                for member in group.members:
+                    band_objective += group.weight * group.eps * sum(
+                        float(x[var]) for var in objective_band_vars(member)
+                    )
+
+        band_score = band_objective - band_loss_weight * band_loss
         sol.band_loss = float(band_loss)
         sol.band_score = float(band_score)
-        sol.band_objective = float(band_score + band_loss_weight * band_loss)
+        sol.band_objective = float(band_objective)
         sol.intersection_loss = 0.0
         sol.total_phase_loss = 0.0
 
@@ -511,12 +608,31 @@ class FlexibleBandSolver(Solver):
 
 
 def _parse_band_key(text: str, n: int):
-    from .objective_config import parse_band_key
+    from ..core.objective import parse_band_key
     return parse_band_key(text, n)
 
 
 def _band_var(band_model: BandModel, band, offset: int) -> int:
     return offset + band_model.var_of(band)
+
+
+def _local_objective_specs(config: ObjectiveConfig,
+                           n: int) -> list[tuple[str, int, int]]:
+    """返回所有非 `.global` 目标项对应的局部窗口规格。"""
+    specs: set[tuple[str, int, int]] = set()
+    for group in config.sum_groups:
+        for key_text in group.terms:
+            if key_text.endswith(".global"):
+                continue
+            band = _parse_band_key(key_text, n)
+            specs.add((band.direction, band.k, band.start))
+    for group in config.balance_groups:
+        for key_text in group.members:
+            if key_text.endswith(".global"):
+                continue
+            band = _parse_band_key(key_text, n)
+            specs.add((band.direction, band.k, band.start))
+    return sorted(specs)
 
 
 def composite_config(up_weight: float = 1.0,                 # 上行全局带权重
@@ -642,17 +758,21 @@ def make_composite_solver(down_weight: float = 1.0,
                           max_window: int = 3,
                           objective_mode: str = "sum",
                           balance_eps: float = 0.1,
-                          balance_terms: tuple[str, ...] = ("up", "down")) -> FlexibleBandSolver:
-    """旧 CompositeBandSolver 的薄工厂。"""
+                          balance_terms: tuple[str, ...] = ("up", "down")):
+    """函数名：make_composite_solver；参数：权重、圈数、目标模式；返回值：SegmentedBandSolver；异常：ValueError。"""
+    from .segmented_band import SegmentedBandSolver
+
     cfg = composite_config(up_weight=up_weight,
                            down_weight=down_weight,
                            objective_mode=objective_mode,
                            balance_eps=balance_eps,
                            balance_terms=balance_terms)
-    return FlexibleBandSolver(cfg, max_loops=max_loops,
-                              name="composite-band",
-                              up_style="global", down_style="global",
-                              up_global_output=True, down_global_output=True)
+    return SegmentedBandSolver(config=cfg,
+                               max_segments=max_window,
+                               max_loops=max_loops,
+                               name="composite-band",
+                               up_style="global", down_style="global",
+                               up_global_output=True, down_global_output=True)
 
 
 def make_oneway_solver(up_weight: float = 1.0,
@@ -660,15 +780,18 @@ def make_oneway_solver(up_weight: float = 1.0,
                        segment_down_weights: dict[str, float] | None = None,
                        max_loops: int = 3,
                        n_intersections: int | None = None,
-                       normalize_window_weights: bool = True) -> FlexibleBandSolver:
-    """旧 OneWayPrioritySolver 的薄工厂。"""
+                       normalize_window_weights: bool = True):
+    """函数名：make_oneway_solver；参数：上行权重、窗口权重、圈数等；返回值：SegmentedBandSolver；异常：ValueError。"""
+    from .segmented_band import SegmentedBandSolver
+
     n = n_intersections or 0
     cfg = oneway_config(up_weight=up_weight,
                         window_weights=window_weights,
                         segment_down_weights=segment_down_weights,
                         n_intersections=n,
                         normalize_window_weights=normalize_window_weights)
-    return FlexibleBandSolver(cfg, max_loops=max_loops,
-                              name="one-way-priority",
-                              up_style="global", down_style="local",
-                              up_global_output=True, down_global_output=False)
+    return SegmentedBandSolver(config=cfg,
+                               max_loops=max_loops,
+                               name="one-way-priority",
+                               up_style="global", down_style="local",
+                               up_global_output=True, down_global_output=False)

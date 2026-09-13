@@ -60,52 +60,227 @@ class Phase:
                 )
 
 
-@dataclass
+@dataclass(frozen=True)
+class SignalConstraint:
+    """路口级业务约束声明。
+
+    本轮重构后，约束不再直接依赖“相位名”，而是依赖分方向多段绿区间的
+    起止时刻。terms 的 key 使用如下记法：
+
+    - ``up.1.start`` / ``up.1.end``
+    - ``down.2.start`` / ``down.2.end``
+
+    其中段号从 1 开始。
+    """
+
+    terms: dict[str, float]
+    sense: str = "<="
+    rhs: float = 0.0
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        """函数名：__post_init__；参数：无；返回值：无；异常：ValueError。"""
+        if self.sense not in ("<=", ">=", "="):
+            raise ValueError(f"非法约束方向: {self.sense}")
+
+
+@dataclass(frozen=True)
+class SignalLoss:
+    """路口内软损失声明。
+
+    与 ``SignalConstraint`` 一样，terms 只描述单个路口内部的段端点表达式：
+
+    - ``up.1.start`` / ``up.1.end``
+    - ``down.2.start`` / ``down.2.end``
+
+    阈值与斜率语义：
+    - 下侧：``lower_slope * max(0, lower_threshold - expr)``
+    - 上侧：``upper_slope * max(0, expr - upper_threshold)``
+    """
+
+    terms: dict[str, float]
+    lower_threshold: float | None = None
+    lower_slope: float = 1.0
+    upper_threshold: float | None = None
+    upper_slope: float | None = None
+    name: str = ""
+
+    def __post_init__(self) -> None:
+        """函数名：__post_init__；参数：无；返回值：无；异常：ValueError。"""
+        if self.lower_threshold is None and self.upper_threshold is None:
+            raise ValueError("SignalLoss 至少需要一个阈值")
+        if self.lower_slope < 0:
+            raise ValueError("SignalLoss.lower_slope 不能为负")
+        if self.upper_slope is not None and self.upper_slope < 0:
+            raise ValueError("SignalLoss.upper_slope 不能为负")
+
+
 class SignalPlan:
     """一个路口的一种可选信控方案。
 
-    两种用法：
-    1. 直接给 up_windows / down_windows（固定窗口，兼容现有代码）；
-    2. 给 phases + up_phase + down_phase，表示该方案由若干相位组成，
-       上行/下行绿灯窗由对应相位的累计起止时间决定，可做相位时长优化。
+    新主入口：
+    - ``up_segments`` / ``down_segments``：按时间顺序给出每个方向的绿区间；
+    - ``signal_constraints``：路口内部的业务约束声明，引用段起止时刻。
+
+    兼容旧入口：
+    - ``up_windows`` / ``down_windows`` 仍可使用，内部会映射到新字段；
+    - ``phases`` 等旧字段暂时保留，供旧求解器继续工作。
     """
 
-    name: str
-    up_windows: list[GreenWindow] = field(default_factory=list)
-    down_windows: list[GreenWindow] = field(default_factory=list)
+    def __init__(
+        self,
+        name: str,
+        up_segments: list[GreenWindow] | None = None,
+        down_segments: list[GreenWindow] | None = None,
+        signal_constraints: list[SignalConstraint] | None = None,
+        signal_losses: list[SignalLoss] | None = None,
+        *,
+        up_windows: list[GreenWindow] | None = None,
+        down_windows: list[GreenWindow] | None = None,
+        phases: list[Phase] | None = None,
+        up_phase: str | None = None,
+        down_phase: str | None = None,
+        lost_time: float = 0.0,
+        phase_lost_times: dict[str, float] | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        """函数名：__init__；参数：方案名、多段绿区间、业务约束等；返回值：无；异常：ValueError。"""
+        self.name = name
+        self.up_segments = list(up_segments if up_segments is not None else (up_windows or []))
+        self.down_segments = list(down_segments if down_segments is not None else (down_windows or []))
+        self.signal_constraints = list(signal_constraints or [])
+        self.signal_losses = list(signal_losses or [])
+        self.phases = list(phases or [])
+        self.up_phase = up_phase
+        self.down_phase = down_phase
+        self.lost_time = float(lost_time)
+        self.phase_lost_times = dict(phase_lost_times or {})
+        self.metadata = dict(metadata or {})
+        self._validate_segments("up", self.up_segments)
+        self._validate_segments("down", self.down_segments)
+        self._validate_signal_constraints()
+        self._validate_signal_losses()
 
-    # ---- 可选：相位级配置（用于第二阶段相位时长优化） ----
-    phases: list[Phase] = field(default_factory=list)
-    up_phase: str | None = None
-    down_phase: str | None = None
-    lost_time: float = 0.0  # 周期尾部损失时间（秒）
+    @staticmethod
+    def _validate_segments(direction: str, segments: list[GreenWindow]) -> None:
+        """函数名：_validate_segments；参数：方向、区间列表；返回值：无；异常：ValueError。"""
+        last_end = -1.0
+        for idx, segment in enumerate(segments, start=1):
+            if segment.start < last_end - 1e-12:
+                raise ValueError(
+                    f"{direction} 第 {idx} 段与前一段重叠或未按时间排序: "
+                    f"{segment.start} < {last_end}"
+                )
+            last_end = segment.end
 
-    # 相位间损失时间：{相位名: 该相位绿灯结束后分配的损失秒数}。
-    # 例如 {"P1": 5.0} 表示 P1 绿灯结束后有 5 秒黄灯/全红，
-    # 然后才进入下一个相位。
-    phase_lost_times: dict[str, float] = field(default_factory=dict)
+    def _value_of_term(self, term: str) -> float:
+        """函数名：_value_of_term；参数：term；返回值：常数值；异常：KeyError/ValueError。"""
+        try:
+            direction, seg_idx, endpoint = term.split(".")
+        except ValueError as exc:
+            raise ValueError(f"非法约束项标识: {term}") from exc
+
+        if direction not in ("up", "down"):
+            raise ValueError(f"未知方向: {direction}")
+        if endpoint not in ("start", "end"):
+            raise ValueError(f"未知区间端点: {endpoint}")
+
+        index = int(seg_idx) - 1
+        segments = self.up_segments if direction == "up" else self.down_segments
+        if not (0 <= index < len(segments)):
+            raise KeyError(
+                f"方案 {self.name} 不存在 {direction}.{seg_idx}.{endpoint}"
+            )
+        window = segments[index]
+        return window.start if endpoint == "start" else window.end
+
+    def term_value(self, term: str) -> float:
+        """函数名：term_value；参数：term；返回值：term 当前比例值；异常：KeyError/ValueError。"""
+        return self._value_of_term(term)
+
+    def all_segment_terms(self) -> list[str]:
+        """函数名：all_segment_terms；参数：无；返回值：全部段级端点名；异常：无。"""
+        terms: list[str] = []
+        for direction, segments in (("up", self.up_segments), ("down", self.down_segments)):
+            for idx, _segment in enumerate(segments, start=1):
+                terms.append(f"{direction}.{idx}.start")
+                terms.append(f"{direction}.{idx}.end")
+        return terms
+
+    def term_bounds(self, term: str) -> tuple[float, float]:
+        """函数名：term_bounds；参数：term；返回值：term 的比例上下界；异常：KeyError/ValueError。"""
+        default = self._value_of_term(term)
+        raw = self.metadata.get("term_bounds", {})
+        if not isinstance(raw, dict) or term not in raw:
+            return (default, default)
+
+        bounds = raw[term]
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            raise ValueError(f"方案 {self.name} 的 term_bounds[{term!r}] 不是二元上下界")
+        lower = float(bounds[0])
+        upper = float(bounds[1])
+        if not (0.0 <= lower <= upper <= 1.0):
+            raise ValueError(
+                f"方案 {self.name} 的 term_bounds[{term!r}] 越界: {(lower, upper)}"
+            )
+        return (lower, upper)
+
+    def _validate_signal_constraints(self) -> None:
+        """函数名：_validate_signal_constraints；参数：无；返回值：无；异常：ValueError。"""
+        for constraint in self.signal_constraints:
+            lhs = sum(
+                coef * self._value_of_term(term)
+                for term, coef in constraint.terms.items()
+            )
+            if constraint.sense == "<=" and lhs > constraint.rhs + 1e-12:
+                raise ValueError(
+                    f"方案 {self.name} 的业务约束 {constraint.name or constraint.terms} 不满足: "
+                    f"{lhs} <= {constraint.rhs} 失败"
+                )
+            if constraint.sense == ">=" and lhs < constraint.rhs - 1e-12:
+                raise ValueError(
+                    f"方案 {self.name} 的业务约束 {constraint.name or constraint.terms} 不满足: "
+                    f"{lhs} >= {constraint.rhs} 失败"
+                )
+            if constraint.sense == "=" and abs(lhs - constraint.rhs) > 1e-12:
+                raise ValueError(
+                    f"方案 {self.name} 的业务约束 {constraint.name or constraint.terms} 不满足: "
+                    f"{lhs} = {constraint.rhs} 失败"
+                )
+
+    def _validate_signal_losses(self) -> None:
+        """函数名：_validate_signal_losses；参数：无；返回值：无；异常：ValueError。"""
+        for loss in self.signal_losses:
+            for term in loss.terms:
+                self._value_of_term(term)
+
+    @property
+    def up_windows(self) -> list[GreenWindow]:
+        """函数名：up_windows；参数：无；返回值：上行区间列表；异常：无。"""
+        return self.up_segments
+
+    @property
+    def down_windows(self) -> list[GreenWindow]:
+        """函数名：down_windows；参数：无；返回值：下行区间列表；异常：无。"""
+        return self.down_segments
 
     def total_lost_time(self) -> float:
-        """周期总损失时间 = 相位间损失 + 尾部损失。"""
+        """函数名：total_lost_time；参数：无；返回值：总损失时间；异常：无。"""
         return float(self.lost_time + sum(self.phase_lost_times.values()))
 
     def phase_by_name(self, name: str) -> Phase:
+        """函数名：phase_by_name；参数：name；返回值：Phase；异常：KeyError。"""
         for ph in self.phases:
             if ph.name == name:
                 return ph
         raise KeyError(f"方案 {self.name} 没有相位 {name}")
 
     def serving_phase_names(self, direction: str) -> list[str]:
-        """返回通过 serves 声明服务某方向的相位名列表。"""
+        """函数名：serving_phase_names；参数：direction；返回值：相位名列表；异常：无。"""
         return [ph.name for ph in self.phases if direction in ph.serves]
 
     def direction_phase_names(self, direction: str) -> list[str]:
-        """返回某个方向最终使用的相位名列表。
-
-        优先级：
-            1. 显式 up_phase / down_phase -> 单元素列表；
-            2. Phase.serves -> 所有服务该方向的相位。
-        """
+        """函数名：direction_phase_names；参数：direction；返回值：相位名列表；异常：ValueError。"""
         if direction not in ("up", "down"):
             raise ValueError(f"未知方向: {direction}")
 
@@ -128,12 +303,12 @@ class SignalPlan:
         return served
 
     def up_green_ratio(self) -> float:
-        """上行总绿信比。"""
-        return sum(w.width for w in self.up_windows)
+        """函数名：up_green_ratio；参数：无；返回值：上行总绿信比；异常：无。"""
+        return sum(w.width for w in self.up_segments)
 
     def down_green_ratio(self) -> float:
-        """下行总绿信比。"""
-        return sum(w.width for w in self.down_windows)
+        """函数名：down_green_ratio；参数：无；返回值：下行总绿信比；异常：无。"""
+        return sum(w.width for w in self.down_segments)
 
 
 # ---------------------------------------------------------------------------

@@ -1,22 +1,66 @@
-from .base import Solver
-from .milp import MaxBandMILPSolver
-from .flexible_band_solver import (FlexibleBandSolver, composite_config,
-                                  oneway_config, make_composite_solver,
-                                  make_oneway_solver)
-CompositeBandSolver = make_composite_solver
-OneWayPrioritySolver = make_oneway_solver
-from .phase import (AlignmentLossBuilder, ConstraintBuilder, LinearSpec,
-                    PhaseLossBuilder, PhaseLossSpec)
-from .two_stage_config import (BandObjectiveConfig,
-                               IntersectionLossConfig, TwoStageConfig)
-from .staged import EpsilonConstraintRunner, TwoStageSolver
-from .flexible_phase_solver import FlexiblePhaseTuneSolver, PhaseTuneSolver
+"""求解器公共入口。
 
-__all__ = ["Solver", "CompositeBandSolver",
-           "MaxBandMILPSolver",
-           "OneWayPrioritySolver", "PhaseTuneSolver", "TwoStageSolver",
-           "EpsilonConstraintRunner", "PhaseLossBuilder", "PhaseLossSpec",
-           "ConstraintBuilder", "LinearSpec", "AlignmentLossBuilder",
-           "FlexibleBandSolver", "composite_config", "oneway_config",
-           "FlexiblePhaseTuneSolver",
-           "BandObjectiveConfig", "IntersectionLossConfig", "TwoStageConfig"]
+推荐直接使用新分层模块：
+- `solvers.core`
+- `solvers.builders`
+- `solvers.stage1`
+- `solvers.stage2`
+- `solvers.pipeline`
+
+`solvers.legacy` 仅保留历史实现，不建议在新代码中继续依赖。
+"""
+
+from .builders import (AlignmentLossBuilder, ConstraintBuilder, LinearExpr,
+                       LinearSpec, SegmentLossBuilder, SegmentLossSpec,
+                       TermValidationContext, TermValidationError,
+                       WindowExpr, direction_phase_name, expr_coefs,
+                       phase_start_times, window_exprs)
+from .core import (BalanceGroup, BandKey, BandModel, ObjectiveConfig, Solver,
+                   SumGroup, fill_solution_window_bands, parse_band_key)
+from .pipeline import (BandObjectiveConfig, EpsilonConstraintRunner,
+                       IntersectionLossConfig, TwoStageConfig, TwoStageSolver)
+from .stage1 import (FlexibleBandSolver, SegmentedBandObjective,
+                     SegmentedBandSolver, composite_config,
+                     make_composite_solver, make_oneway_solver,
+                     oneway_config)
+from .stage2 import (FlexiblePhaseTuneSolver, FullFlexiblePhaseTuneSolver,
+                     PhaseTuneSolver)
+
+__all__ = [
+    "Solver",
+    "TermValidationContext",
+    "TermValidationError",
+    "BandKey",
+    "SumGroup",
+    "BalanceGroup",
+    "ObjectiveConfig",
+    "parse_band_key",
+    "BandModel",
+    "fill_solution_window_bands",
+    "LinearExpr",
+    "WindowExpr",
+    "direction_phase_name",
+    "phase_start_times",
+    "window_exprs",
+    "expr_coefs",
+    "SegmentLossBuilder",
+    "SegmentLossSpec",
+    "ConstraintBuilder",
+    "LinearSpec",
+    "AlignmentLossBuilder",
+    "FlexibleBandSolver",
+    "SegmentedBandObjective",
+    "SegmentedBandSolver",
+    "composite_config",
+    "oneway_config",
+    "make_composite_solver",
+    "make_oneway_solver",
+    "FullFlexiblePhaseTuneSolver",
+    "FlexiblePhaseTuneSolver",
+    "PhaseTuneSolver",
+    "BandObjectiveConfig",
+    "IntersectionLossConfig",
+    "TwoStageConfig",
+    "TwoStageSolver",
+    "EpsilonConstraintRunner",
+]

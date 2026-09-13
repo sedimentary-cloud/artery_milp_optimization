@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..models import Arterial
-from ..solution import Solution
+from ...models import Arterial
+from ...solution import Solution
 
 
 class Solver(ABC):

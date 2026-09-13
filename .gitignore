@@ -4,3 +4,5 @@ __pycache__/
 conda-envs/
 conda-pkgs/
 *.png
+*.Identifier
+examples/*_output.json
