@@ -286,8 +286,8 @@ def build_margin() -> BandMarginConfig:
     return BandMarginConfig(
         hard_margin_up=0.01,
         hard_margin_down=0.01,
-        soft_margin_up=0.03,
-        soft_margin_down=0.03,
+        soft_margin_up=0.02,
+        soft_margin_down=0.02,
         penalty_up=1.0,
         penalty_down=1.0,
     )
