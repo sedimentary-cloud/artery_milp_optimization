@@ -1,16 +1,20 @@
-"""Stage 1 max-band 目标的周期扫描示例。
+"""周期扫描：比较 Stage 1-only 与 iterative 的净目标曲线。
 
 复用 ``objective_templates_comparison.py`` 里的 3.1 场景与配置：
 
 - 干线、路口、信号方案和约束来自 ``build_comparison_arterial()``；
 - 目标使用 3.1 的 ``global_sum``，即最大化所有全局 band 的带宽和；
-- 求解器只使用 Stage 1（``SegmentedBandSolver``），不运行 Stage 2；
-- 遍历公共周期 C = 40, 42, ..., 180 秒，记录 3.1 口径的带层得分并绘制折线图。
+- 分别运行：
+  1. Stage 1 only：只运行 ``SegmentedBandSolver``；
+  2. Iterative：运行 ``IterativeTwoStageSolver``；
+- 遍历公共周期 C = 40, 42, ..., 180 秒；
+- 对每个周期计算 ``band_score - intersection_loss`` 并绘制折线图。
 
 输出：
 
-- ``cycle_sweep_iterative_maxband_score.png``：周期 -> band_score - intersection_loss 折线图；
-- ``cycle_sweep_iterative_maxband_score.csv``：每个周期的详细结果。
+- ``cycle_sweep_stage1_net.png``：Stage 1-only 净目标折线图；
+- ``cycle_sweep_iterative_net.png``：Iterative 净目标折线图；
+- ``cycle_sweep_stage1_net.csv``、``cycle_sweep_iterative_net.csv``：详细数据。
 """
 
 from __future__ import annotations
@@ -32,18 +36,24 @@ if str(ROOT) not in sys.path:
 
 from artery_milp.models import (Arterial, Intersection, SignalConstraint,
                                 SignalLoss, SignalPlan)
+from artery_milp.solvers.pipeline import IterativeTwoStageSolver
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 from artery_milp.examples.objective_templates_comparison import (
     build_comparison_arterial,
     build_margin,
+    build_two_stage_config,
     objective_global_sum,
 )
 
 OUTPUT_DIR = Path(__file__).resolve().parent
 CYCLE_START = 40.0
 CYCLE_STOP = 180.0
-CYCLE_STEP = 2.0
+CYCLE_STEP = 5.0
 
+
+# ---------------------------------------------------------------------------
+# 周期重建：把 90s 下的约束/损失阈值换算到目标周期
+# ---------------------------------------------------------------------------
 
 def _validate_cycle_pair(reference_cycle: float, target_cycle: float) -> tuple[float, float]:
     reference = float(reference_cycle)
@@ -155,47 +165,29 @@ def build_cycle_arterial(cycle: float) -> Arterial:
     return _rebase_arterial(base, cycle)
 
 
-def solve_one_cycle(cycle: float) -> dict[str, object]:
-    """在指定周期下只运行 Stage 1 max-band 求解。"""
-    try:
-        arterial = build_cycle_arterial(cycle)
-        solver = SegmentedBandSolver(
-            config=objective_global_sum(),
-            max_loops=3,
-            up_global_output=True,
-            down_global_output=True,
-            margin=build_margin(),
-        )
-        sol = solver.solve(arterial, band_loss_weight=0.5)
-    except Exception as exc:  # noqa: BLE001 - 示例需要把失败周期也记录进 CSV
-        return {
-            "cycle": float(cycle),
-            "status": f"failed: {type(exc).__name__}: {exc}",
-            "band_score": math.nan,
-            "band_objective": math.nan,
-            "band_loss": math.nan,
-            "intersection_loss": math.nan,
-            "up_bandwidth": math.nan,
-            "down_bandwidth": math.nan,
-        }
+# ---------------------------------------------------------------------------
+# 求解与结果提取
+# ---------------------------------------------------------------------------
 
-    if not str(sol.status).startswith("optimal"):
-        return {
-            "cycle": float(cycle),
-            "status": str(sol.status),
-            "band_score": math.nan,
-            "band_objective": math.nan,
-            "band_loss": math.nan,
-            "intersection_loss": math.nan,
-            "up_bandwidth": math.nan,
-            "down_bandwidth": math.nan,
-        }
+def _failure_row(cycle: float, status: str) -> dict[str, object]:
+    return {
+        "cycle": float(cycle),
+        "status": status,
+        "band_score": math.nan,
+        "band_objective": math.nan,
+        "band_loss": math.nan,
+        "intersection_loss": math.nan,
+        "up_bandwidth": math.nan,
+        "down_bandwidth": math.nan,
+    }
 
+
+def _solution_row(cycle: float, sol) -> dict[str, object]:
     up_total = sum(sol.multi_bandwidths.get("up", {}).values())
     down_total = sum(sol.multi_bandwidths.get("down", {}).values())
     return {
         "cycle": float(cycle),
-        "status": sol.status,
+        "status": str(sol.status),
         "band_score": float(sol.band_score),
         "band_objective": float(sol.band_objective),
         "band_loss": float(sol.band_loss),
@@ -205,8 +197,72 @@ def solve_one_cycle(cycle: float) -> dict[str, object]:
     }
 
 
-def save_csv(rows: list[dict[str, object]]) -> Path:
-    path = OUTPUT_DIR / "cycle_sweep_iterative_maxband_score.csv"
+def solve_one_cycle(cycle: float, *, mode: str) -> dict[str, object]:
+    """在指定周期下运行 Stage 1-only 或 Iterative 求解。"""
+    try:
+        arterial = build_cycle_arterial(cycle)
+        if mode == "stage1":
+            solver = SegmentedBandSolver(
+                config=objective_global_sum(),
+                max_loops=3,
+                up_global_output=True,
+                down_global_output=True,
+                margin=build_margin(),
+            )
+            sol = solver.solve(arterial, band_loss_weight=0.5)
+        elif mode == "iterative":
+            config = build_two_stage_config(
+                mode="global",
+                objective=objective_global_sum(),
+                margin=build_margin(),
+            )
+            solver = IterativeTwoStageSolver(config=config, max_iterations=10)
+            sol = solver.solve(arterial)
+        else:
+            raise ValueError(f"unknown mode: {mode}")
+    except Exception as exc:  # noqa: BLE001 - 示例需要把失败周期也记录进 CSV
+        return _failure_row(cycle, f"failed: {type(exc).__name__}: {exc}")
+
+    if not str(sol.status).startswith("optimal"):
+        return _failure_row(cycle, str(sol.status))
+    return _solution_row(cycle, sol)
+
+
+def run_sweep(cycles: list[float], *, mode: str, label: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    print(f"开始周期扫描：{label}")
+    for cycle in cycles:
+        row = solve_one_cycle(cycle, mode=mode)
+        rows.append(row)
+        score = float(row["band_score"]) if not _is_nan(row["band_score"]) else math.nan
+        inter = float(row["intersection_loss"]) if not _is_nan(row["intersection_loss"]) else math.nan
+        net = score - inter
+        net_text = "nan" if math.isnan(net) else f"{net:.6f}"
+        print(f"  C={cycle:5.1f}s  net={net_text:>12s}  status={row['status']}")
+    return rows
+
+
+def _is_nan(value: object) -> bool:
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return True
+
+
+def _net_scores(rows: list[dict[str, object]]) -> list[float]:
+    return [
+        float(row["band_score"]) - float(row["intersection_loss"])
+        if not _is_nan(row["band_score"]) and not _is_nan(row["intersection_loss"])
+        else math.nan
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 输出
+# ---------------------------------------------------------------------------
+
+def save_csv(rows: list[dict[str, object]], path: Path) -> Path:
     fieldnames = [
         "cycle",
         "status",
@@ -224,18 +280,17 @@ def save_csv(rows: list[dict[str, object]]) -> Path:
     return path
 
 
-def plot_curve(rows: list[dict[str, object]]) -> Path:
+def plot_net_curve(
+    rows: list[dict[str, object]],
+    *,
+    title: str,
+    path: Path,
+    ylim: tuple[float, float] | None = None,
+) -> Path:
     cycles = [float(row["cycle"]) for row in rows]
-    band_scores = [float(row["band_score"]) for row in rows]
-    inter_losses = [float(row["intersection_loss"]) for row in rows]
-    net_scores = [
-        band - loss
-        for band, loss in zip(band_scores, inter_losses)
-    ]
+    net_scores = _net_scores(rows)
 
     fig, ax = plt.subplots(figsize=(10, 5.5))
-
-    # 主曲线：band_score - intersection_loss。
     ax.plot(
         cycles,
         net_scores,
@@ -244,25 +299,6 @@ def plot_curve(rows: list[dict[str, object]]) -> Path:
         linewidth=1.8,
         color="#1f77b4",
         label="band_score - intersection_loss",
-    )
-    # 两条细虚线作为组成项参考。
-    ax.plot(
-        cycles,
-        band_scores,
-        linestyle=":",
-        linewidth=1.0,
-        color="#2ca02c",
-        alpha=0.65,
-        label="band_score",
-    )
-    ax.plot(
-        cycles,
-        inter_losses,
-        linestyle=":",
-        linewidth=1.0,
-        color="#d62728",
-        alpha=0.65,
-        label="intersection_loss",
     )
 
     valid = [
@@ -282,13 +318,15 @@ def plot_curve(rows: list[dict[str, object]]) -> Path:
             color="#d62728",
         )
 
+    if ylim is not None:
+        ax.set_ylim(*ylim)
+
     ax.set_xlabel("Cycle C (s)")
     ax.set_ylabel("band_score - intersection_loss")
-    ax.set_title("Stage 1: band_score - intersection_loss vs cycle")
+    ax.set_title(title)
     ax.grid(alpha=0.3)
     ax.legend(loc="best", fontsize=9)
 
-    path = OUTPUT_DIR / "cycle_sweep_iterative_maxband_score.png"
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -296,26 +334,53 @@ def plot_curve(rows: list[dict[str, object]]) -> Path:
 
 
 def main() -> None:
-    cycles = []
+    cycles: list[float] = []
     c = CYCLE_START
     while c <= CYCLE_STOP + 1e-9:
         cycles.append(round(c, 6))
         c += CYCLE_STEP
 
-    rows: list[dict[str, object]] = []
-    print("开始周期扫描：Stage 1 max-band (3.1 global_sum)")
-    for cycle in cycles:
-        row = solve_one_cycle(cycle)
-        rows.append(row)
-        score = row["band_score"]
-        score_text = "nan" if isinstance(score, float) and math.isnan(score) else f"{float(score):.6f}"
-        status = str(row["status"])
-        print(f"  C={cycle:5.1f}s  score={score_text:>12s}  status={status}")
+    stage1_rows = run_sweep(cycles, mode="stage1", label="Stage 1 only")
+    iterative_rows = run_sweep(cycles, mode="iterative", label="Iterative")
 
-    csv_path = save_csv(rows)
-    png_path = plot_curve(rows)
-    print(f"CSV 已保存到 {csv_path}")
-    print(f"折线图已保存到 {png_path}")
+    stage1_csv = save_csv(
+        stage1_rows,
+        OUTPUT_DIR / "cycle_sweep_stage1_net.csv",
+    )
+    iterative_csv = save_csv(
+        iterative_rows,
+        OUTPUT_DIR / "cycle_sweep_iterative_net.csv",
+    )
+
+    all_nets = [
+        net
+        for net in (_net_scores(stage1_rows) + _net_scores(iterative_rows))
+        if not math.isnan(net)
+    ]
+    shared_ylim: tuple[float, float] | None = None
+    if all_nets:
+        low = min(all_nets)
+        high = max(all_nets)
+        pad = max(1.0, 0.08 * (high - low))
+        shared_ylim = (low - pad, high + pad)
+
+    stage1_png = plot_net_curve(
+        stage1_rows,
+        title="Stage 1 only: band_score - intersection_loss vs cycle",
+        path=OUTPUT_DIR / "cycle_sweep_stage1_net.png",
+        ylim=shared_ylim,
+    )
+    iterative_png = plot_net_curve(
+        iterative_rows,
+        title="Iterative: band_score - intersection_loss vs cycle",
+        path=OUTPUT_DIR / "cycle_sweep_iterative_net.png",
+        ylim=shared_ylim,
+    )
+
+    print(f"Stage 1-only CSV: {stage1_csv}")
+    print(f"Stage 1-only PNG: {stage1_png}")
+    print(f"Iterative CSV: {iterative_csv}")
+    print(f"Iterative PNG: {iterative_png}")
 
 
 if __name__ == "__main__":
