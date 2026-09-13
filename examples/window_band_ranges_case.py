@@ -204,11 +204,7 @@ def main() -> None:
         arterial,
         solution,
         save_path=str(image_path),
-        notes=[
-            "Example: local window band ranges",
-            f"Focus key = {focus_key}",
-            f"Instances = {len(focus_ranges)}",
-        ],
+        notes=[f"Focus: {focus_key}"],
     )
 
     print("=" * 80)

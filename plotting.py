@@ -109,7 +109,8 @@ def plot_time_space(arterial: Arterial,
                     max_band_window: int = 5,
                     save_path: str | None = None,
                     ax: plt.Axes | None = None,
-                    notes: list[str] | None = None) -> plt.Axes:
+                    notes: list[str] | None = None,
+                    show_direction_labels: bool = False) -> plt.Axes:
     """绘制干线时空图。
 
     args:
@@ -122,6 +123,8 @@ def plot_time_space(arterial: Arterial,
         save_path: 若给定则保存图片；
         ax: 复用已有坐标轴；
         notes: 可选的图内说明文字，用于标记损失/约束信息；每项一行。
+        show_direction_labels: 是否绘制每个路口的 `I1.up.1` / `I1.down.1`
+            调试标签；默认 False，避免每个周期重复刷屏。
     """
     close_after_save = ax is None
     if ax is None:
@@ -197,29 +200,22 @@ def plot_time_space(arterial: Arterial,
         # 每个路口中心画一条水平细黑线（在灯条上方，路口编号下方）
         ax.axhline(pos[i], color="black", linewidth=0.8, zorder=6)
 
-        # 在灯条附近标注“路口.相位”：
-        #   - 横坐标放在每个周期灯条的中心；
-        #   - 沿时间轴每个周期重复，铺满整张时空图；
-        #   - 垂直位置分别贴近上行/下行灯条。
-        label_up = "up.1" if plan.up_windows else None
-        label_down = "down.1" if plan.down_windows else None
-
-        labels = []
-        if label_up:
-            labels.append((f"{inter.name}.{label_up}",
-                                 pos[i] + h / 2))
-        if label_down:
-            labels.append((f"{inter.name}.{label_down}",
-                                 pos[i] - h / 2))
-        for label_text, label_y in labels:
-            for k in range(k_min, k_max + 1):
-                bar_center_x = k * C + C / 2.0
-                ax.text(bar_center_x, label_y, label_text,
-                        ha="center", va="center", fontsize=5.0,
+        # 方向标签默认不画：路口名已经标在左侧，方向由上下半条表示。
+        # 只有显式打开 show_direction_labels 时，才在第一个可见周期附近画一次。
+        if show_direction_labels:
+            x_label = t_min + 0.5 * C
+            if plan.up_windows:
+                ax.text(x_label, pos[i] + h / 2, f"{inter.name}.up.1",
+                        ha="center", va="center", fontsize=6.0,
                         color="black", zorder=21, clip_on=True,
                         bbox=dict(facecolor="white", edgecolor="none",
-                                  alpha=0.65,
-                                  boxstyle="round,pad=0.05"))
+                                  alpha=0.65, boxstyle="round,pad=0.05"))
+            if plan.down_windows:
+                ax.text(x_label, pos[i] - h / 2, f"{inter.name}.down.1",
+                        ha="center", va="center", fontsize=6.0,
+                        color="black", zorder=21, clip_on=True,
+                        bbox=dict(facecolor="white", edgecolor="none",
+                                  alpha=0.65, boxstyle="round,pad=0.05"))
 
         ax.text(label_x, pos[i], inter.name,
                 ha="left", va="center", fontsize=11, fontweight="bold",
@@ -240,7 +236,7 @@ def plot_time_space(arterial: Arterial,
             "down": _global_window_range_entries(solution, "down", names),
         }
 
-    # 图例
+    # 图例：只保留必要类别，避免 Up Band / Up Multi-Bands 等重复项。
     from matplotlib.patches import Patch
     handles = [
         Patch(facecolor="limegreen", alpha=1.0, label="Green Window"),
@@ -267,42 +263,16 @@ def plot_time_space(arterial: Arterial,
             linewidth=BAND_HATCH_LINEWIDTH,
             label="Down Band",
         ))
-    if has_multi_bands:
-        handles.append(Patch(
-            facecolor=_band_facecolor(GLOBAL_UP_COLOR, GLOBAL_BAND_ALPHA),
-            edgecolor=GLOBAL_UP_COLOR,
-            hatch=GLOBAL_UP_HATCH,
-            linewidth=BAND_HATCH_LINEWIDTH,
-            label="Up Multi-Bands",
-        ))
-        handles.append(Patch(
-            facecolor=_band_facecolor(GLOBAL_DOWN_COLOR, GLOBAL_BAND_ALPHA),
-            edgecolor=GLOBAL_DOWN_COLOR,
-            hatch=GLOBAL_DOWN_HATCH,
-            linewidth=BAND_HATCH_LINEWIDTH,
-            label="Down Multi-Bands",
-        ))
-    if has_window_bands:
+    if has_window_bands or has_multi_window_bands:
         handles.append(Patch(
             facecolor=_window_facecolor(WINDOW_UP_COLOR),
             edgecolor="none",
-            label="Window Bands (Up)",
+            label="Window Band (Up)",
         ))
         handles.append(Patch(
             facecolor=_window_facecolor(WINDOW_DOWN_COLOR),
             edgecolor="none",
-            label="Window Bands (Down)",
-        ))
-    if has_multi_window_bands:
-        handles.append(Patch(
-            facecolor=_window_facecolor(WINDOW_UP_COLOR),
-            edgecolor="none",
-            label="Multi Window Bands (Up)",
-        ))
-        handles.append(Patch(
-            facecolor=_window_facecolor(WINDOW_DOWN_COLOR),
-            edgecolor="none",
-            label="Multi Window Bands (Down)",
+            label="Window Band (Down)",
         ))
     ax.legend(handles=handles, loc="lower right", fontsize=9)
 
@@ -546,7 +516,7 @@ def plot_time_space(arterial: Arterial,
     ax.set_ylim(-0.05 * pos[-1], 1.05 * pos[-1])
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Distance (m)")
-    ax.set_title(f"Time-Space Diagram (Cycle {C:.0f}s)")
+    ax.set_title("Time-Space Diagram")
     ax.grid(alpha=0.3, zorder=0)
 
     # x 轴主刻度按周期 C 对齐，副刻度按 C/4 细分，保证主副网格线对齐
