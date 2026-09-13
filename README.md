@@ -76,7 +76,7 @@ from artery_milp.models import (
 
 # 目标 DSL
 from artery_milp.solvers.core import (
-    ObjectiveConfig, SumGroup, BalanceGroup,
+    ObjectiveConfig, SumGroup, BalanceGroup, BandMarginConfig,
     build_objective_config, composite_config, oneway_config,
 )
 
@@ -525,8 +525,8 @@ i2 = Intersection("I2", [
 
 ## 3. 定义绿波带优化目标与带层损失
 
-> 说明：早期的 `AlignmentLossBuilder`（带中心绝对时间对齐）已移除。
-> 新语义（绿波带边缘到绿灯区间边缘的距离控制）计划按“Stage 1 硬边距 + Stage 2 软边距”重新设计；当前版本暂不提供该功能。
+> 边距控制由 `BandMarginConfig` 提供：Stage 1 只做硬边距，Stage 2 同时做硬边距 + 软边距。
+> 硬边距保证绿波带不贴绿灯区间边缘，软边距进一步追求居中，用少量理论带宽换鲁棒性。
 
 ### 3.1 带标识 `BandKey` 语法
 
@@ -667,7 +667,48 @@ ObjectiveConfig(sum_groups=[SumGroup({
 - `BalanceGroup` 组内成员的 `k` 必须相同；
 - 同一个带不能出现在多个 `BalanceGroup` 中。
 
-### 3.5 高级：外部约束与软损失
+### 3.5 硬/软边距 `BandMarginConfig`
+
+`BandMarginConfig` 用来实现“不要贴边”的工程偏好：
+
+```python
+from artery_milp.solvers.core import BandMarginConfig
+
+margin = BandMarginConfig(
+    hard_margin_up=0.01,     # 硬边距（周期比例）
+    hard_margin_down=0.01,
+    soft_margin_up=0.03,     # 软边距（周期比例）
+    soft_margin_down=0.03,
+    penalty_up=1.0,          # 软边距惩罚系数
+    penalty_down=1.0,
+)
+```
+
+含义：
+
+- 硬边距：Stage 1 + Stage 2 都生效。
+  求解时把有效绿灯窗口向内缩：
+  ```text
+  effective_window = (green_start + hard_margin, green_end - hard_margin)
+  ```
+  这样绿波带天然不会贴边。
+- 软边距：只在 Stage 2 生效。
+  方案锁定后，对每个 band instance 在每个路口的起点/终点边距计算：
+  ```text
+  start_margin = t_i - green_start_i
+  end_margin   = green_end_i - (t_i + width_i)
+  ```
+  如果小于 `soft_margin`，按 `penalty` 产生 `band_loss`。
+- 配置要求：`soft_margin >= hard_margin >= 0`。
+
+两阶段分工：
+
+| 阶段 | 硬边距 | 软边距 |
+| :--- | :--- | :--- |
+| Stage 1 | 生效（缩小每个候选方案的窗口） | 不生效 |
+| Stage 2 | 生效（作用于调参后的端点） | 生效（产生 band_loss） |
+
+### 3.6 高级：外部约束与软损失
 
 以下工具适合跨路口、带宽层、临时策略，**不建议**用来描述单个路口内部关系。
 
@@ -833,12 +874,18 @@ Stage 1 做两件事：
 ```python
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 
+margin = BandMarginConfig(
+    hard_margin_up=0.01,
+    hard_margin_down=0.01,
+)
+
 solver = SegmentedBandSolver(
     config=objective,       # ObjectiveConfig
     max_segments=3,         # 最多建模到第几段
     max_loops=3,            # 整数圈数范围 [-max_loops, max_loops]
     up_global_output=False,
     down_global_output=False,
+    margin=margin,          # Stage 1 只用硬边距
 )
 solution = solver.solve(
     arterial,
@@ -854,6 +901,7 @@ solution = solver.solve(
 - 对每个“方向-段号”实例建立传播时刻 `t`、整数圈数 `m`、逐路段带宽 `width`、全走廊带宽 `global`；
 - 只对“所有候选方案共同拥有”的段号建模；
 - 目标由 `ObjectiveConfig` 决定；
+- 可选 `BandMarginConfig`：Stage 1 只使用 `hard_margin_*`，把每个候选方案的窗口向内缩；
 
 `SegmentedBandSolver` 现在必须显式传入 `ObjectiveConfig`。如果只是想在旧的“权重”形式上快速构造目标，可以用：
 
@@ -889,6 +937,7 @@ tuner = FullFlexiblePhaseTuneSolver(
     max_loops=3,
     up_global_output=True,
     down_global_output=False,
+    margin=margin,          # 同时使用硬边距 + 软边距
 )
 solution = tuner.solve(
     arterial,
@@ -906,6 +955,7 @@ solution = tuner.solve(
 - `prior.plan_choices` 决定每个路口使用哪个方案；
 - `term_bounds` 决定哪些端点可调、范围多少；不在其中的端点固定；
 - `FullFlexiblePhaseTuneSolver` 本身不再接收 `mode`；`mode` 只保留在 `TwoStageConfig.band.mode` 等上层配置，用于选择预设目标和输出口径；
+- `margin` 控制硬/软边距：硬边距作用于调参后的端点，软边距产生 `band_loss`；
 - `up_global_output` / `down_global_output` 控制输出口径；
 - `tunable_intersections` 可以进一步限制哪些路口允许调；
 - `objective="bandwidth"` 主优化带宽；
@@ -1091,7 +1141,7 @@ class Solution:
 | 字段 | 含义 |
 | :--- | :--- |
 | `band_objective` | 带层收益，`SumGroup + BalanceGroup` 部分 |
-| `band_loss` | 带层软损失，主要来自 `kind="band"` 的 `SegmentLossSpec` |
+| `band_loss` | 带层软损失：Stage 2 软边距 + `kind="band"` 的 `SegmentLossSpec` |
 | `band_score` | `band_objective - band_loss_weight * band_loss`，带层真实得分 |
 | `intersection_loss` | 交叉口层软损失：`kind="intersection"` 的损失 + 软 `LinearSpec` slack |
 | `objective` | solver 原始目标值，不同 solver/模式语义不同 |
@@ -1256,8 +1306,9 @@ PYTHONPATH=/home/qktx ./conda-envs/artery_milp/bin/python your_script.py
 - 一个路口多个候选方案；
 - 方案内部 `SignalConstraint` / `SignalLoss`；
 - 给 `split_priority` 配置第二阶段可调范围 `metadata["term_bounds"]`；
-- Stage 1 求解后输出重点窗口带 `down.win3@I2-I4`，并打印 `band_objective`；
-- Stage 1 之后继续运行 Stage 2，打印 `term_bounds` 带来的端点微调；
+- 配置硬/软边距 `BandMarginConfig`；
+- Stage 1（只做硬边距）输出重点窗口带 `down.win3@I2-I4`，并打印 `band_objective`；
+- Stage 2 同时做硬边距 + 软边距，打印端点微调与 `band_loss` / `band_score`；
 - 输出 JSON 与时空图。
 
 ```bash
@@ -1265,7 +1316,15 @@ cd /home/qktx/artery_milp
 ./conda-envs/artery_milp/bin/python examples/window_band_ranges_case.py
 ```
 
-> 当前示例不再包含 `AlignmentLossBuilder`；带层损失功能暂不存在。
+边距配置为：
+
+```python
+BandMarginConfig(
+    hard_margin_up=0.01, hard_margin_down=0.01,
+    soft_margin_up=0.03, soft_margin_down=0.03,
+    penalty_up=1.0, penalty_down=1.0,
+)
+```
 
 Stage 1 会输出：
 
@@ -1274,12 +1333,12 @@ Stage 1 会输出：
 局部绿波带时间范围示例
 求解状态: optimal
 选中的方案: {'I1': 'baseline', 'I2': 'split_priority', 'I3': 'baseline', 'I4': 'baseline'}
-band_objective=32.354
+band_objective=27.674
 重点窗口带: down.win3@I2-I4
-  实例 1: bandwidth=13.36s, time=[18.90, 59.40]
-    I2: start=46.04s, end=59.40s
-    I3: start=31.76s, end=45.11s
-    I4: start=18.90s, end=32.26s
+  实例 1: bandwidth=11.56s, time=[19.80, 58.50]
+    I2: start=46.94s, end=58.50s
+    I3: start=32.66s, end=44.21s
+    I4: start=19.80s, end=31.36s
 ```
 
 随后 Stage 2 会读取 `split_priority` 的 `term_bounds`，在允许范围内微调端点，并打印对比：
@@ -1295,7 +1354,7 @@ Stage 2 端点微调（term_bounds 生效）
   up.1.end: 名义 26.10s -> 调整后 27.90s, 允许范围 [24.30, 27.90]s
   up.1.start: 名义 13.50s -> 调整后 11.70s, 允许范围 [11.70, 15.30]s
   up.2.start: 名义 27.90s -> 调整后 29.70s, 允许范围 [27.00, 29.70]s
-  band_objective=35.751, intersection_loss=1.350
+  band_objective=29.606, band_loss=8.843, band_score=25.184, intersection_loss=1.350
 ```
 
 并生成：
@@ -1416,6 +1475,10 @@ Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个
 - Stage 2 只保留 `FullFlexiblePhaseTuneSolver`，不再有 `FlexiblePhaseTuneSolver` / `PhaseTuneSolver` 包装层；
 - Stage 1 只保留 `SegmentedBandSolver`，必须显式传入 `ObjectiveConfig`，旧的 `SegmentedBandObjective` 已移除；
 - 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
-- `AlignmentLossBuilder` 已删除，当前版本不提供对齐损失；未来计划按“Stage 1 硬边距 + Stage 2 软边距”重新引入；
+- 边距控制由 `BandMarginConfig` 提供：Stage 1 只用硬边距，Stage 2 同时使用硬边距和软边距；
+- `hard_margin_*` 会缩小有效绿灯窗口，配置过大可能导致候选方案或 Stage 2 infeasible；`TwoStageSolver` 会回退到 Stage 1；
+- Stage 1 的方案选择只看硬边距，看不到软边距；软边距只影响 Stage 2 的最终端点微调；
+- `soft_margin_*` 必须 >= `hard_margin_*`，否则软边距永远不会生效；
+- Stage 2 的软边距损失计入 `Solution.band_loss`，并通过 `band_loss_weight` 进入 `band_score`；
 - `ObjectiveConfig` 里的 band key（如 `up.seg5`）目前由 `parse_band_key` 解析，但尚未做完整的段号边界校验，非法段号可能在后续建模阶段报错；
 - 仓库里可能残留 Windows 的 `*:Zone.Identifier` 文件，可安全删除。

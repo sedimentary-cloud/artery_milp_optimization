@@ -10,6 +10,7 @@ from ...solution import Solution
 from ..core.base import Solver
 from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
+from ..core.margin import BandMarginConfig
 from ..core.objective import BandKey, ObjectiveConfig, parse_band_key
 from ..builders.signal_constraints import (ConstraintBuilder, LinearSpec,
                                            SegmentLossBuilder,
@@ -32,12 +33,14 @@ class FullFlexiblePhaseTuneSolver(Solver):
         max_loops: int = 3,
         up_global_output: bool = True,
         down_global_output: bool = False,
+        margin: BandMarginConfig | None = None,
     ) -> None:
-        """函数名：__init__；参数：config、max_loops、输出口径；返回值：无；异常：无。"""
+        """函数名：__init__；参数：config、max_loops、输出口径、边距；返回值：无；异常：无。"""
         self.config = config
         self.max_loops = max_loops
         self.up_global_output = up_global_output
         self.down_global_output = down_global_output
+        self.margin = margin or BandMarginConfig()
 
     @staticmethod
     def _available_bands(plans: list[SignalPlan]) -> list[BandInstance]:
@@ -373,6 +376,87 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     cur += 1
                 resolved_constraints.append((scaled_spec, terms, slack, kind))
 
+        # ------------------------------------------------------------------
+        # 边距参数（ratio -> 秒）
+        # ------------------------------------------------------------------
+        hard_margin_up = self.margin.hard_margin_up * cycle
+        hard_margin_down = self.margin.hard_margin_down * cycle
+        soft_margin_up = self.margin.soft_margin_up * cycle
+        soft_margin_down = self.margin.soft_margin_down * cycle
+        penalty_up = self.margin.penalty_up
+        penalty_down = self.margin.penalty_down
+
+        # 软边距记录：每条记录包含一个 slack 变量、margin 表达式系数、
+        # 软边距阈值（秒）和惩罚系数。
+        margin_records: list[dict[str, object]] = []
+        if self.margin.has_soft_margin:
+            # 1) 全局带实例：每个路口一个起点边距；每条边的两个端点各一个终点边距。
+            for direction, segment_no in band_instances:
+                key = (direction, segment_no)
+                soft_margin = soft_margin_up if direction == "up" else soft_margin_down
+                penalty = penalty_up if direction == "up" else penalty_down
+                if soft_margin <= 0.0 or penalty <= 0.0:
+                    continue
+
+                start_name = f"{direction}.{segment_no}.start"
+                end_name = f"{direction}.{segment_no}.end"
+                for i, expr in enumerate(exprs):
+                    start_var = idx_terms[i][expr.term_names.index(start_name)]
+                    slack = cur
+                    cur += 1
+                    margin_records.append({
+                        "slack": slack,
+                        "terms": {t_idx[key][i]: 1.0, start_var: -1.0},
+                        "rhs": soft_margin,
+                        "penalty": penalty,
+                    })
+                for e in range(m):
+                    for i in (e, e + 1):
+                        end_var = idx_terms[i][exprs[i].term_names.index(end_name)]
+                        slack = cur
+                        cur += 1
+                        margin_records.append({
+                            "slack": slack,
+                            "terms": {
+                                end_var: 1.0,
+                                t_idx[key][i]: -1.0,
+                                width_idx[key][e]: -1.0,
+                            },
+                            "rhs": soft_margin,
+                            "penalty": penalty,
+                        })
+
+            # 2) 局部窗口带实例：每个参与路口各一个起点/终点边距。
+            for local_key, band_var in lattice_idx.items():
+                direction, segment_no, k, start = local_key
+                soft_margin = soft_margin_up if direction == "up" else soft_margin_down
+                penalty = penalty_up if direction == "up" else penalty_down
+                if soft_margin <= 0.0 or penalty <= 0.0:
+                    continue
+
+                start_name = f"{direction}.{segment_no}.start"
+                end_name = f"{direction}.{segment_no}.end"
+                t_vars = local_t_idx[local_key]
+                for offset, abs_idx in enumerate(range(start, start + k)):
+                    start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(start_name)]
+                    end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(end_name)]
+                    slack = cur
+                    cur += 1
+                    margin_records.append({
+                        "slack": slack,
+                        "terms": {t_vars[offset]: 1.0, start_var: -1.0},
+                        "rhs": soft_margin,
+                        "penalty": penalty,
+                    })
+                    slack = cur
+                    cur += 1
+                    margin_records.append({
+                        "slack": slack,
+                        "terms": {end_var: 1.0, t_vars[offset]: -1.0, band_var: -1.0},
+                        "rhs": soft_margin,
+                        "penalty": penalty,
+                    })
+
         nvar = cur
         effective_max_intersection = (
             max_intersection_loss if max_intersection_loss is not None else max_loss
@@ -403,6 +487,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
             for spec, _, slack, kind in resolved_constraints:
                 if kind == "band" and spec.soft and slack is not None:
                     c[slack] += band_loss_weight * spec.penalty
+            for record in margin_records:
+                c[record["slack"]] += band_loss_weight * record["penalty"]
             if effective_max_intersection is not None:
                 tiny = 1e-7
                 for spec, _, slack, kind in resolved_constraints:
@@ -441,6 +527,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
         for spec, _, slack, _kind in resolved_constraints:
             if slack is not None:
                 ub[slack] = cycle
+        for record in margin_records:
+            ub[record["slack"]] = cycle
 
         rows: list[np.ndarray] = []
         lo_list: list[float] = []
@@ -500,6 +588,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         for direction, segment_no in band_instances:
             key = (direction, segment_no)
+            margin_s = hard_margin_up if direction == "up" else hard_margin_down
             if direction == "up":
                 start_name = f"up.{segment_no}.start"
                 end_name = f"up.{segment_no}.end"
@@ -523,7 +612,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
             for i, expr in enumerate(exprs):
                 start_var = idx_terms[i][expr.term_names.index(start_name)]
-                add_row({t_idx[key][i]: 1.0, start_var: -1.0}, 0.0, np.inf)
+                add_row({t_idx[key][i]: 1.0, start_var: -1.0}, margin_s, np.inf)
 
             for e in range(m):
                 left_end_var = idx_terms[e][exprs[e].term_names.index(end_name)]
@@ -531,12 +620,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 add_row(
                     {t_idx[key][e]: 1.0, width_idx[key][e]: 1.0, left_end_var: -1.0},
                     -np.inf,
-                    0.0,
+                    -margin_s,
                 )
                 add_row(
                     {t_idx[key][e + 1]: 1.0, width_idx[key][e]: 1.0, right_end_var: -1.0},
                     -np.inf,
-                    0.0,
+                    -margin_s,
                 )
                 add_row(
                     {global_idx[key]: 1.0, width_idx[key][e]: -1.0},
@@ -546,6 +635,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         for local_key, band_var in lattice_idx.items():
             direction, segment_no, k, start = local_key
+            margin_s = hard_margin_up if direction == "up" else hard_margin_down
             t_vars = local_t_idx[local_key]
             loop_vars = local_loop_idx[local_key]
             local_segs = segs[start:start + k - 1]
@@ -574,8 +664,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
             for offset, abs_idx in enumerate(range(start, start + k)):
                 start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(start_name)]
                 end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(end_name)]
-                add_row({t_vars[offset]: 1.0, start_var: -1.0}, 0.0, np.inf)
-                add_row({t_vars[offset]: 1.0, band_var: 1.0, end_var: -1.0}, -np.inf, 0.0)
+                add_row({t_vars[offset]: 1.0, start_var: -1.0}, margin_s, np.inf)
+                add_row({t_vars[offset]: 1.0, band_var: 1.0, end_var: -1.0}, -np.inf, -margin_s)
+
+        # 软边距约束：slack + expr >= soft_margin
+        for record in margin_records:
+            add_row({**record["terms"], record["slack"]: 1.0}, record["rhs"], np.inf)
 
         for gidx, group in enumerate(self.config.balance_groups):
             gvar = balance_vars[gidx]
@@ -667,7 +761,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 for i in range(n)
             }
 
-        fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops)
+        fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops, margin=self.margin)
         fill_solution_window_band_ranges(sol, arterial)
         # 当前 solver 始终输出多段带，风格固定为 multi。
         sol.band_up_style = "multi"
@@ -688,6 +782,13 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 band_loss += weighted
             else:
                 intersection_loss += weighted
+
+        for record in margin_records:
+            expr_value = sum(
+                coef * float(x[var]) for var, coef in record["terms"].items()
+            )
+            violation = max(0.0, float(record["rhs"]) - expr_value)
+            band_loss += float(record["penalty"]) * violation
 
         band_objective = 0.0
         for group in self.config.sum_groups:

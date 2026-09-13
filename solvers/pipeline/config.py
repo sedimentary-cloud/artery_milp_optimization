@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 
 from ..builders.signal_constraints import (ConstraintBuilder,
                                            SegmentLossBuilder)
+from ..core.margin import BandMarginConfig
 from ..core.objective import ObjectiveConfig
 
 
@@ -70,6 +71,7 @@ class TwoStageConfig:
     Attributes:
         band: 绿波带层目标配置。
         intersection: 交叉口层损失配置。
+        margin: 硬/软边距配置。
         max_loops: mU/mD 整数圈数上界。
     """
 
@@ -77,10 +79,12 @@ class TwoStageConfig:
     intersection: IntersectionLossConfig = field(
         default_factory=IntersectionLossConfig
     )
+    margin: BandMarginConfig = field(default_factory=BandMarginConfig)
     max_loops: int = 3
 
     def validate(self) -> None:
         self.band.validate()
+        self.margin.validate()
         if self.max_loops < 0:
             raise ValueError("max_loops 不能为负")
 

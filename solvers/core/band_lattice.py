@@ -99,9 +99,14 @@ def _make_window_band_range_entry(key: str,
     }
 
 
-def _selected_segment_window_sets(solution, arterial):
-    """还原每个路口、每个方向的全部段级绿灯窗（秒）。"""
+def _selected_segment_window_sets(solution, arterial, margin=None):
+    """还原每个路口、每个方向的全部段级绿灯窗（秒）。
+
+    margin 非空时，返回的是扣掉硬边距后的有效窗口。
+    """
     C = arterial.cycle
+    margin_up = float(margin.hard_margin_up) * C if margin is not None else 0.0
+    margin_down = float(margin.hard_margin_down) * C if margin is not None else 0.0
     out: dict[str, dict[str, list[tuple[float, float]]]] = {}
 
     for inter in arterial.intersection_order:
@@ -123,15 +128,29 @@ def _selected_segment_window_sets(solution, arterial):
                 s_key = f"up.{seg_idx}.start"
                 e_key = f"up.{seg_idx}.end"
                 if s_key in st and e_key in st:
-                    up_windows.append((float(st[s_key]), float(st[e_key])))
+                    start_s = float(st[s_key]) + margin_up
+                    end_s = float(st[e_key]) - margin_up
+                    if end_s > start_s:
+                        up_windows.append((start_s, end_s))
             for seg_idx in range(1, len(plan.down_windows) + 1):
                 s_key = f"down.{seg_idx}.start"
                 e_key = f"down.{seg_idx}.end"
                 if s_key in st and e_key in st:
-                    down_windows.append((float(st[s_key]), float(st[e_key])))
+                    start_s = float(st[s_key]) + margin_down
+                    end_s = float(st[e_key]) - margin_down
+                    if end_s > start_s:
+                        down_windows.append((start_s, end_s))
         else:
-            up_windows = [(w.start * C, w.end * C) for w in plan.up_windows]
-            down_windows = [(w.start * C, w.end * C) for w in plan.down_windows]
+            up_windows = [
+                (w.start * C + margin_up, w.end * C - margin_up)
+                for w in plan.up_windows
+                if w.end * C - margin_up > w.start * C + margin_up
+            ]
+            down_windows = [
+                (w.start * C + margin_down, w.end * C - margin_down)
+                for w in plan.down_windows
+                if w.end * C - margin_down > w.start * C + margin_down
+            ]
 
         out[inter.name] = {
             "up": up_windows,
@@ -263,13 +282,14 @@ def fill_solution_local_window_band_data(solution,
                                          arterial,
                                          max_window: int = 5,
                                          max_loops: int = 3,
-                                         clear: bool = True) -> None:
+                                         clear: bool = True,
+                                         margin=None) -> None:
     """按“独立局部带”语义回填所有窗口带宽和时间范围。"""
     int_names = [v.name for v in arterial.intersection_order]
     n = len(int_names)
     segs = arterial.segment_order
     cycle = arterial.cycle
-    window_sets = _selected_segment_window_sets(solution, arterial)
+    window_sets = _selected_segment_window_sets(solution, arterial, margin=margin)
 
     if clear:
         solution.multi_window_bands = {"up": {}, "down": {}}
@@ -397,7 +417,8 @@ def fill_solution_multi_window_bands(solution,
                                      arterial,
                                      max_window: int = 5,
                                      clear: bool = True,
-                                     max_loops: int = 3) -> None:
+                                     max_loops: int = 3,
+                                     margin=None) -> None:
     """按独立局部带语义回填多段窗口带宽。"""
     fill_solution_local_window_band_data(
         solution,
@@ -405,6 +426,7 @@ def fill_solution_multi_window_bands(solution,
         max_window=max_window,
         max_loops=max_loops,
         clear=clear,
+        margin=margin,
     )
 
 

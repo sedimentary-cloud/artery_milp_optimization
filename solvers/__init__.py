@@ -13,9 +13,10 @@ from .builders import (ConstraintBuilder, LinearSpec,
                        SegmentLossBuilder, SegmentLossSpec,
                        TermValidationContext, TermValidationError,
                        WindowExpr, window_exprs)
-from .core import (BalanceGroup, BandKey, ObjectiveConfig, Solver,
-                   SumGroup, build_objective_config,
-                   composite_config, oneway_config, parse_band_key)
+from .core import (BalanceGroup, BandKey, BandMarginConfig,
+                   ObjectiveConfig, Solver, SumGroup,
+                   build_objective_config, composite_config,
+                   oneway_config, parse_band_key)
 from .pipeline import (BandObjectiveConfig, EpsilonConstraintRunner,
                        IntersectionLossConfig, TwoStageConfig, TwoStageSolver)
 from .stage1 import SegmentedBandSolver
@@ -40,6 +41,7 @@ __all__ = [
     "composite_config",
     "oneway_config",
     "build_objective_config",
+    "BandMarginConfig",
     "FullFlexiblePhaseTuneSolver",
     "BandObjectiveConfig",
     "IntersectionLossConfig",

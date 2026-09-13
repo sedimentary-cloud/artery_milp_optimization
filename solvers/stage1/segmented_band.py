@@ -26,6 +26,7 @@ from ..builders.term_validation import (TermValidationContext,
 from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
 from ..core.base import Solver
+from ..core.margin import BandMarginConfig
 from ..core.objective import ObjectiveConfig, parse_band_key
 
 
@@ -47,9 +48,11 @@ class SegmentedBandSolver(Solver):
         name: str = "segmented-band",
         up_global_output: bool = False,
         down_global_output: bool = False,
+        margin: BandMarginConfig | None = None,
     ) -> None:
-        """函数名：__init__；参数：config、最大段数、最大圈数、输出口径；返回值：无；异常：ValueError。"""
+        """函数名：__init__；参数：config、最大段数、最大圈数、输出口径、边距；返回值：无；异常：ValueError。"""
         self.config = config
+        self.margin = margin or BandMarginConfig()
         self.max_segments = int(max_segments)
         self.max_loops = int(max_loops)
         self.name = name
@@ -80,6 +83,17 @@ class SegmentedBandSolver(Solver):
 
         if n < 2:
             raise ValueError("SegmentedBandSolver 至少需要两个路口")
+
+        hard_margin_up = self.margin.hard_margin_up * cycle
+        hard_margin_down = self.margin.hard_margin_down * cycle
+
+        def effective_start(plan: SignalPlan, direction: str, segment_no: int) -> float:
+            margin = hard_margin_up if direction == "up" else hard_margin_down
+            return self._segment_window(plan, direction, segment_no).start * cycle + margin
+
+        def effective_end(plan: SignalPlan, direction: str, segment_no: int) -> float:
+            margin = hard_margin_up if direction == "up" else hard_margin_down
+            return self._segment_window(plan, direction, segment_no).end * cycle - margin
 
         config = self.config
         config.validate(n)
@@ -347,18 +361,18 @@ class SegmentedBandSolver(Solver):
 
             for i, opt_list in enumerate(options):
                 start_terms = {
-                    idx_opt[i][o]: self._segment_window(plan, direction, segment_no).start * cycle
+                    idx_opt[i][o]: effective_start(plan, direction, segment_no)
                     for o, plan in enumerate(opt_list)
                 }
                 add_row({t_idx[key][i]: -1.0, **start_terms}, -np.inf, 0.0)
 
             for e in range(m):
                 left_end_terms = {
-                    idx_opt[e][o]: -self._segment_window(plan, direction, segment_no).end * cycle
+                    idx_opt[e][o]: -effective_end(plan, direction, segment_no)
                     for o, plan in enumerate(options[e])
                 }
                 right_end_terms = {
-                    idx_opt[e + 1][o]: -self._segment_window(plan, direction, segment_no).end * cycle
+                    idx_opt[e + 1][o]: -effective_end(plan, direction, segment_no)
                     for o, plan in enumerate(options[e + 1])
                 }
                 add_row(
@@ -402,11 +416,11 @@ class SegmentedBandSolver(Solver):
 
             for offset, abs_idx in enumerate(range(start, start + k)):
                 start_terms = {
-                    idx_opt[abs_idx][o]: self._segment_window(plan, direction, segment_no).start * cycle
+                    idx_opt[abs_idx][o]: effective_start(plan, direction, segment_no)
                     for o, plan in enumerate(options[abs_idx])
                 }
                 end_terms = {
-                    idx_opt[abs_idx][o]: -self._segment_window(plan, direction, segment_no).end * cycle
+                    idx_opt[abs_idx][o]: -effective_end(plan, direction, segment_no)
                     for o, plan in enumerate(options[abs_idx])
                 }
                 add_row({t_vars[offset]: -1.0, **start_terms}, -np.inf, 0.0)
@@ -550,7 +564,7 @@ class SegmentedBandSolver(Solver):
                 int_names[i]: float(x[t_idx[("down", first_segment)][i]])
                 for i in range(n)
             }
-        fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops)
+        fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops, margin=self.margin)
         fill_solution_window_band_ranges(sol, arterial)
 
         band_loss = 0.0

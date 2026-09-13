@@ -44,6 +44,7 @@ class TwoStageSolver(Solver):
             max_loops=cfg.max_loops,
             up_global_output=True,
             down_global_output=(mode == "global"),
+            margin=cfg.margin,
         )
         s1 = stage1.solve(
             arterial,
@@ -56,6 +57,7 @@ class TwoStageSolver(Solver):
                 max_loops=cfg.max_loops,
                 up_global_output=True,
                 down_global_output=(mode == "global"),
+                margin=cfg.margin,
             )
             s2 = stage2.solve(
                 arterial,
@@ -104,6 +106,7 @@ class EpsilonConstraintRunner:
             max_loops=self.max_loops,
             up_global_output=True,
             down_global_output=(self.mode == "global"),
+            margin=self.config.margin,
         )
 
     def _bandwidth(self, sol: Solution) -> float:

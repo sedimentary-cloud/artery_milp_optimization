@@ -7,6 +7,7 @@
 - 如何在同一个 `SignalPlan` 内配置多个 `up/down segments`；
 - 如何把路口内约束/软损失直接绑定到某个 `SignalPlan`；
 - 如何给方案配置第二阶段可调范围 `metadata["term_bounds"]`；
+- 如何配置硬/软边距 `BandMarginConfig`；
 - 如何在 Stage 1 之后继续运行 Stage 2，查看 term_bounds 带来的端点微调；
 - 如何把该结果直接导出为 JSON，供绘图或外部系统消费。
 """
@@ -28,7 +29,7 @@ if str(ROOT) not in sys.path:
 from artery_milp import plot_time_space
 from artery_milp.models import (Arterial, GreenWindow, Intersection, Segment,
                                 SignalConstraint, SignalLoss, SignalPlan)
-from artery_milp.solvers.core import ObjectiveConfig, SumGroup
+from artery_milp.solvers.core import BandMarginConfig, ObjectiveConfig, SumGroup
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 from artery_milp.solvers.stage2 import FullFlexiblePhaseTuneSolver
 
@@ -161,13 +162,27 @@ def build_objective() -> ObjectiveConfig:
     })])
 
 
+def build_margin() -> BandMarginConfig:
+    """硬边距保证不贴边，软边距进一步追求居中。"""
+    return BandMarginConfig(
+        hard_margin_up=0.01,
+        hard_margin_down=0.01,
+        soft_margin_up=0.03,
+        soft_margin_down=0.03,
+        penalty_up=1.0,
+        penalty_down=1.0,
+    )
+
+
 def main() -> None:
     """函数名：main；参数：无；返回值：无；异常：RuntimeError。"""
     arterial = build_window_range_case()
+    margin = build_margin()
     solver = SegmentedBandSolver(
         config=build_objective(),
         up_global_output=True,
         down_global_output=False,
+        margin=margin,
     )
     solution = solver.solve(arterial)
     if solution.status != "optimal":
@@ -219,8 +234,9 @@ def main() -> None:
     tuner = FullFlexiblePhaseTuneSolver(
         config=build_objective(),
         max_loops=3,
+        margin=margin,
     )
-    tuned = tuner.solve(arterial, prior=solution)
+    tuned = tuner.solve(arterial, prior=solution, band_loss_weight=0.5)
     if tuned.status != "optimal":
         raise RuntimeError(f"unexpected stage2 status: {tuned.status}")
 
@@ -254,6 +270,8 @@ def main() -> None:
 
     print(
         f"  band_objective={tuned.band_objective:.3f}, "
+        f"band_loss={tuned.band_loss:.3f}, "
+        f"band_score={tuned.band_score:.3f}, "
         f"intersection_loss={tuned.intersection_loss:.3f}"
     )
     print(f"Stage 2 JSON 已保存到 {tuned_json_path}")
