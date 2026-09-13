@@ -98,8 +98,16 @@ def build_window_range_case() -> Arterial:
         "I1": [
             SignalPlan(
                 name="baseline",
-                up_segments=make_windows([(0.05, 0.64)]),
-                down_segments=make_windows([(0.38, 0.76)]),
+                up_segments=make_windows([(0.05, 0.67)]),
+                down_segments=make_windows([(0.38, 0.86)]),
+                signal_losses=[
+                    SignalLoss(
+                        terms={"down.1.start": 1.0},
+                        upper_threshold=0.40,
+                        lower_slope=0.9,
+                        name="希望 down.1.start 不要开始太早",
+                    ),
+                ],
             ),
         ],
         # I2 有两个候选方案：
@@ -116,8 +124,8 @@ def build_window_range_case() -> Arterial:
             # 这里用 SignalConstraint 明确要求两段之间至少留 0.02 个周期。
             SignalPlan(
                 name="split_priority",
-                up_segments=make_windows([(0.15, 0.29), (0.31, 0.92)]),
-                down_segments=make_windows([(0.23, 0.66), (0.68, 0.78)]),
+                up_segments=make_windows([(0.15, 0.29), (0.44, 0.92)]),
+                down_segments=make_windows([(0.13, 0.56), (0.70, 0.88)]),
                 # SignalConstraint 是“方案内部硬约束”。
                 # up.2.start - up.1.end >= 0.02 表示：
                 # 第 2 段上行绿灯开始，至少比第 1 段结束晚 0.02 个周期。
@@ -125,13 +133,13 @@ def build_window_range_case() -> Arterial:
                     SignalConstraint(
                         terms={"up.2.start": 1.0, "up.1.end": -1.0},
                         sense=">=",
-                        rhs=0.02,
-                        name="上行两段之间至少保留 0.02 周期间隔",
+                        rhs=0.15,
+                        name="上行两段之间至少保留 0.15 周期间隔",
                     ),
                     SignalConstraint(
                         terms={"down.2.start": 1.0, "down.1.end": -1.0},
                         sense=">=",
-                        rhs=0.02,
+                        rhs=0.14,
                         name="下行两段之间至少保留 0.02 周期间隔",
                     ),
                 ],
@@ -141,10 +149,10 @@ def build_window_range_case() -> Arterial:
                 signal_losses=[
                     SignalLoss(
                         terms={"down.1.start": 1.0},
-                        lower_threshold=0.28,
-                        upper_threshold=0.34,
-                        lower_slope=1.0,
-                        upper_slope=1.0,
+                        lower_threshold=0.08,
+                        upper_threshold=0.17,
+                        lower_slope=1.9,
+                        upper_slope=1.5,
                         name="希望 split_priority 的下行首段不要贴住加宽后的左边缘",
                     ),
                 ],
@@ -154,9 +162,9 @@ def build_window_range_case() -> Arterial:
                     "term_bounds": {
                         "up.1.start":   (0.11, 0.19),
                         "up.1.end":     (0.25, 0.33),
-                        "up.2.start":   (0.285, 0.345),
-                        "down.1.start": (0.25, 0.37),
-                        "down.1.end":   (0.55, 0.67),
+                        "up.2.start":   (0.35, 0.50),
+                        "down.1.start": (0.05, 0.37),
+                        "down.1.end":   (0.50, 0.67),
                         "down.2.start": (0.63, 0.75),
                     }
                 },
@@ -168,8 +176,8 @@ def build_window_range_case() -> Arterial:
         "I3": [
             SignalPlan(
                 name="baseline",
-                up_segments=make_windows([(0.29, 0.68)]),
-                down_segments=make_windows([(0.33, 0.82)]),
+                up_segments=make_windows([(0.09, 0.78)]),
+                down_segments=make_windows([(0.23, 0.82)]),
             ),
             # split_balanced 同样是多段方案。
             SignalPlan(
@@ -195,8 +203,8 @@ def build_window_range_case() -> Arterial:
                         terms={"up.2.end": 1.0},
                         lower_threshold=0.51,
                         upper_threshold=0.55,
-                        lower_slope=1.0,
-                        upper_slope=1.0,
+                        lower_slope=1.4,
+                        upper_slope=1.2,
                         name="希望 split_balanced 的上行第二段结束时刻落在窗口内",
                     ),
                 ],
@@ -212,10 +220,10 @@ def build_window_range_case() -> Arterial:
                 down_segments=make_windows([(0.21, 0.90)]),
                 metadata={
                     "term_bounds": {
-                        "up.1.start":   (0.38, 0.44),
-                        "up.1.end":     (0.77, 0.83),
-                        "down.1.start": (0.18, 0.24),
-                        "down.1.end":   (0.87, 0.93),
+                        "up.1.start":   (0.18, 0.44),
+                        "up.1.end":     (0.77, 0.93),
+                        "down.1.start": (0.08, 0.24),
+                        "down.1.end":   (0.87, 0.98),
                     }
                 },
             ),

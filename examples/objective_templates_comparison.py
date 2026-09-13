@@ -286,6 +286,28 @@ def main() -> None:
             f"3.{idx} {title} / IterativeTwoStageSolver",
         )
 
+    # ---------------- 第 3 组附加：3.4 下行权重为 0 ----------------
+    objective_3_4 = objective_oneway_down_zero()
+    solution_3_4 = solve_iterative(arterial, margin, "oneway", objective_3_4)
+    iterative_results["oneway_down_zero"] = solution_3_4
+    save_time_space(
+        arterial,
+        solution_3_4,
+        "compare_3_4_iterative_oneway_down_zero.png",
+        "3.4 One-way (Down Zero) / IterativeTwoStageSolver",
+    )
+
+    # ---------------- 第 3 组附加：3.5 下行权重放大 10 倍 ----------------
+    objective_3_5 = objective_oneway_down_high()
+    solution_3_5 = solve_iterative(arterial, margin, "oneway", objective_3_5)
+    iterative_results["oneway_down_high"] = solution_3_5
+    save_time_space(
+        arterial,
+        solution_3_5,
+        "compare_3_5_iterative_oneway_down_high.png",
+        "3.5 One-way (Down High) / IterativeTwoStageSolver",
+    )
+
     # ---------------- 第 4 组：Pareto 对比 ----------------
     # 使用 1.1 最大全局带宽和目标下的单阶段解，与 3.1 迭代稳定解作为 prior
     # 的 ε-约束 Pareto 前沿对比。
@@ -347,6 +369,8 @@ def main() -> None:
         "compare_3_1_iterative_global_sum.png",
         "compare_3_2_iterative_global_balanced.png",
         "compare_3_3_iterative_oneway_down_low.png",
+        "compare_3_4_iterative_oneway_down_zero.png",
+        "compare_3_5_iterative_oneway_down_high.png",
         "compare_4_1_pareto_global_sum.png",
     ]:
         print(f"  {OUTPUT_DIR / filename}")
