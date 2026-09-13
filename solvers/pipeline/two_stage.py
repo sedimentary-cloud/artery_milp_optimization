@@ -171,8 +171,42 @@ class EpsilonConstraintRunner:
                     continue
             deduped.append(point)
 
-        self.frontier = deduped
-        return deduped
+        # ε-约束采样得到的点不一定都互不支配：
+        # 例如某个 eps 点可能和另一个点带宽相同但损失更大，
+        # 或带宽更小且损失更大。这里做一次真正的 Pareto 过滤。
+        filtered = self._pareto_filter(deduped)
+        self.frontier = filtered
+        return filtered
+
+    @staticmethod
+    def _pareto_filter(
+        points: list[tuple[float, float, float, Solution]],
+    ) -> list[tuple[float, float, float, Solution]]:
+        """去掉被支配点。
+
+        点结构：(eps, bandwidth_metric, intersection_loss, solution)。
+        目标口径：bandwidth_metric 越大越好，intersection_loss 越小越好。
+        """
+        kept: list[tuple[float, float, float, Solution]] = []
+        for i, p in enumerate(points):
+            p_bw, p_loss = float(p[1]), float(p[2])
+            dominated = False
+            for j, q in enumerate(points):
+                if i == j:
+                    continue
+                q_bw, q_loss = float(q[1]), float(q[2])
+                better_or_equal = (
+                    q_bw >= p_bw - 1e-9 and q_loss <= p_loss + 1e-9
+                )
+                strictly_better = (
+                    q_bw > p_bw + 1e-9 or q_loss < p_loss - 1e-9
+                )
+                if better_or_equal and strictly_better:
+                    dominated = True
+                    break
+            if not dominated:
+                kept.append(p)
+        return kept
 
     def knee_point(self) -> tuple[float, float, Solution] | None:
         """函数名：knee_point；参数：无；返回值：启发式拐点；异常：无。"""
