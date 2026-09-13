@@ -451,6 +451,8 @@ class SegmentedBandSolver(Solver):
         # 因为 milp 求最小，所以这里写 c[var] -= weight。
         for group in config.sum_groups:
             for key_text, weight in group.terms.items():
+                if weight == 0.0:
+                    continue
                 member_vars = band_member_vars(key_text)
                 if not member_vars:
                     raise ValueError(f"目标项 {key_text} 在当前多段配置下没有可用变量")
@@ -1026,6 +1028,8 @@ class SegmentedBandSolver(Solver):
         band_objective = 0.0
         for group in config.sum_groups:
             for key_text, weight in group.terms.items():
+                if weight == 0.0:
+                    continue
                 band_objective += weight * sum(float(x[var]) for var in band_member_vars(key_text))
         for gidx, group in enumerate(config.balance_groups):
             band_objective += group.weight * float(x[balance_vars[gidx]])
@@ -1091,8 +1095,9 @@ class SegmentedBandSolver(Solver):
         """
         specs: set[tuple[str, int, int]] = set()
         for group in config.sum_groups:
-            for key_text in group.terms:
-                if key_text.endswith(".global"):
+            for key_text, weight in group.terms.items():
+                # 权重为 0 的目标项不需要建立局部 band 变量。
+                if weight == 0.0 or key_text.endswith(".global"):
                     continue
                 band = parse_band_key(key_text, n)
                 specs.add((band.direction, band.k, band.start))

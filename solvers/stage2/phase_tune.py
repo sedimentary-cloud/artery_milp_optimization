@@ -70,8 +70,9 @@ class FullFlexiblePhaseTuneSolver(Solver):
         """函数名：_local_objective_specs；参数：config、n；返回值：局部窗口规格；异常：无。"""
         specs: set[tuple[str, int, int]] = set()
         for group in config.sum_groups:
-            for key_text in group.terms:
-                if key_text.endswith(".global"):
+            for key_text, weight in group.terms.items():
+                # 权重为 0 的目标项不需要建立局部 band 变量。
+                if weight == 0.0 or key_text.endswith(".global"):
                     continue
                 band = parse_band_key(key_text, n)
                 specs.add((band.direction, band.k, band.start))
@@ -511,6 +512,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
         else:
             for group in self.config.sum_groups:
                 for key, weight in group.terms.items():
+                    if weight == 0.0:
+                        continue
                     member_vars = band_member_vars_text(key)
                     if not member_vars:
                         raise ValueError(f"目标项 {key} 在当前多段方案下没有可用带宽变量")
@@ -907,6 +910,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
         band_objective = 0.0
         for group in self.config.sum_groups:
             for key, weight in group.terms.items():
+                if weight == 0.0:
+                    continue
                 band_objective += weight * sum(float(x[var]) for var in band_member_vars_text(key))
         for gidx, group in enumerate(self.config.balance_groups):
             band_objective += group.weight * float(x[balance_vars[gidx]])

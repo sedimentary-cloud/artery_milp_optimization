@@ -107,14 +107,47 @@ def objective_global_balanced() -> ObjectiveConfig:
 
 
 def objective_oneway_down_low() -> ObjectiveConfig:
-    """模板 1.3：单向优化，下行方向权重设小。"""
-    return build_objective_config(
+    """模板 1.3：单向优化，下行小绿波带权重小，但保留一条下行全局带。
+
+    ``oneway_config`` 默认只奖励 up.global + 下行局部带。
+    这里额外加一个很小的 down.global 权重，避免 1.3 / 2.3 / 3.3 图中
+    完全没有下行全局绿波带。
+    """
+    objective = build_objective_config(
         mode="oneway",
         up_weight=1.0,
-        window_weights={2: 0.05, 3: 0.02},
+        window_weights={2: 0.05},
         n_intersections=4,
         normalize_window_weights=False,
     )
+    # 保留一条权重很小的下行全局带，让 1.3 / 2.3 / 3.3 也能画出 Global Band。
+    objective.sum_groups[0].terms["down.global"] = 0.10
+    return objective
+
+
+def objective_oneway_down_zero() -> ObjectiveConfig:
+    """模板 2.4：one-way 配置，但下行方向权重全部为 0。"""
+    return build_objective_config(
+        mode="oneway",
+        up_weight=1.0,
+        window_weights={2: 0.0},
+        n_intersections=4,
+        normalize_window_weights=False,
+    )
+
+
+def objective_oneway_down_high() -> ObjectiveConfig:
+    """模板 2.5：one-way 配置，但下行方向权重放大 10 倍。"""
+    objective = build_objective_config(
+        mode="oneway",
+        up_weight=1.0,
+        window_weights={2: 0.5},
+        n_intersections=4,
+        normalize_window_weights=False,
+    )
+    # 下行全局带也从 0.10 放大到 1.0。
+    objective.sum_groups[0].terms["down.global"] = 1.0
+    return objective
 
 
 def build_two_stage_config(mode: str, objective: ObjectiveConfig,
@@ -219,6 +252,28 @@ def main() -> None:
             f"2.{idx} {title} / TwoStageSolver",
         )
 
+    # ---------------- 第 2 组附加：2.4 下行权重为 0 ----------------
+    objective_2_4 = objective_oneway_down_zero()
+    solution_2_4 = solve_two_stage(arterial, margin, "oneway", objective_2_4)
+    stage2_results["oneway_down_zero"] = solution_2_4
+    save_time_space(
+        arterial,
+        solution_2_4,
+        "compare_2_4_two_stage_oneway_down_zero.png",
+        "2.4 One-way (Down Zero) / TwoStageSolver",
+    )
+
+    # ---------------- 第 2 组附加：2.5 下行权重放大 10 倍 ----------------
+    objective_2_5 = objective_oneway_down_high()
+    solution_2_5 = solve_two_stage(arterial, margin, "oneway", objective_2_5)
+    stage2_results["oneway_down_high"] = solution_2_5
+    save_time_space(
+        arterial,
+        solution_2_5,
+        "compare_2_5_two_stage_oneway_down_high.png",
+        "2.5 One-way (Down High) / TwoStageSolver",
+    )
+
     # ---------------- 第 3 组：迭代两阶段 ----------------
     for idx, (name, mode, objective_builder, title) in enumerate(objective_specs, start=1):
         objective = objective_builder()
@@ -287,6 +342,8 @@ def main() -> None:
         "compare_2_1_two_stage_global_sum.png",
         "compare_2_2_two_stage_global_balanced.png",
         "compare_2_3_two_stage_oneway_down_low.png",
+        "compare_2_4_two_stage_oneway_down_zero.png",
+        "compare_2_5_two_stage_oneway_down_high.png",
         "compare_3_1_iterative_global_sum.png",
         "compare_3_2_iterative_global_balanced.png",
         "compare_3_3_iterative_oneway_down_low.png",
