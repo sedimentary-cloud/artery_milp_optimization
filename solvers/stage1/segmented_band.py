@@ -4,7 +4,6 @@
 - 多段绿波带传播；
 - 路口多方案选择；
 - ObjectiveConfig 目标 DSL；
-- AlignmentLossBuilder 带层软损失；
 
 约束说明：
 - 每个方向的第 r 段只与各路口同编号第 r 段协调；
@@ -65,12 +64,11 @@ class SegmentedBandSolver(Solver):
     def solve(
         self,
         arterial: Arterial,
-        alignment_builder=None,
         band_loss_weight: float = 0.0,
         constraint_builder=None,
         loss_builder=None,
     ) -> Solution:
-        """函数名：solve；参数：arterial、alignment_builder、band_loss_weight、业务约束/损失；返回值：Solution；异常：ValueError。"""
+        """函数名：solve；参数：arterial、band_loss_weight、业务约束/损失；返回值：Solution；异常：ValueError。"""
         cycle = arterial.cycle
         ints = arterial.intersection_order
         segs = arterial.segment_order
@@ -183,15 +181,8 @@ class SegmentedBandSolver(Solver):
                 return [width_idx[("up", segment_no)][seg_idx] for segment_no in active_by_direction["up"]]
             return []
 
-        band_loss_specs = []
-        if alignment_builder is not None:
-            # AlignmentLossBuilder 现在只处理上下行全局带对齐。
-            band_loss_specs = alignment_builder.to_linear_specs(int_names)
-
         # 业务约束与损失
         all_specs: list[tuple[LinearSpec, str]] = []
-        for spec in band_loss_specs:
-            all_specs.append((spec, "band"))
         if constraint_builder is not None:
             for spec in constraint_builder.specs:
                 all_specs.append((spec, "intersection"))

@@ -7,7 +7,6 @@
 - 如何在同一个 `SignalPlan` 内配置多个 `up/down segments`；
 - 如何把路口内约束/软损失直接绑定到某个 `SignalPlan`；
 - 如何给方案配置第二阶段可调范围 `metadata["term_bounds"]`；
-- 如何配置一个简单的上行对齐损失 `AlignmentLossBuilder`；
 - 如何在 Stage 1 之后继续运行 Stage 2，查看 term_bounds 带来的端点微调；
 - 如何把该结果直接导出为 JSON，供绘图或外部系统消费。
 """
@@ -29,7 +28,6 @@ if str(ROOT) not in sys.path:
 from artery_milp import plot_time_space
 from artery_milp.models import (Arterial, GreenWindow, Intersection, Segment,
                                 SignalConstraint, SignalLoss, SignalPlan)
-from artery_milp.solvers.builders import AlignmentLossBuilder
 from artery_milp.solvers.core import ObjectiveConfig, SumGroup
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 from artery_milp.solvers.stage2 import FullFlexiblePhaseTuneSolver
@@ -163,35 +161,15 @@ def build_objective() -> ObjectiveConfig:
     })])
 
 
-def build_alignment() -> AlignmentLossBuilder:
-    """一个简单的上行对齐损失：希望上行带中心依次落在 0.10~0.55 周期。
-
-    AlignmentLossBuilder 内部会把目标转成软约束：
-        tU_I1 + 0.5 * b_up ~ 0.10 * cycle
-        tU_I2 + 0.5 * b_up ~ 0.25 * cycle
-        ...
-    """
-    return AlignmentLossBuilder(
-        targets_up={"I1": 0.10, "I2": 0.25, "I3": 0.40, "I4": 0.55},
-        tolerance=0.0,
-        weight_up=1.0,
-    )
-
-
 def main() -> None:
     """函数名：main；参数：无；返回值：无；异常：RuntimeError。"""
     arterial = build_window_range_case()
-    alignment = build_alignment()
     solver = SegmentedBandSolver(
         config=build_objective(),
         up_global_output=True,
         down_global_output=False,
     )
-    solution = solver.solve(
-        arterial,
-        alignment_builder=alignment,
-        band_loss_weight=0.5,
-    )
+    solution = solver.solve(arterial)
     if solution.status != "optimal":
         raise RuntimeError(f"unexpected solver status: {solution.status}")
 
@@ -222,11 +200,7 @@ def main() -> None:
     print("局部绿波带时间范围示例")
     print(f"求解状态: {solution.status}")
     print(f"选中的方案: {solution.plan_choices}")
-    print(
-        f"带层得分: band_objective={solution.band_objective:.3f}, "
-        f"band_loss={solution.band_loss:.3f}, "
-        f"band_score={solution.band_score:.3f}"
-    )
+    print(f"band_objective={solution.band_objective:.3f}")
     print(f"重点窗口带: {focus_key}")
     for idx, item in enumerate(focus_ranges, start=1):
         print(f"  实例 {idx}: bandwidth={item['bandwidth']:.2f}s, time=[{item['time_min']:.2f}, {item['time_max']:.2f}]")
@@ -246,12 +220,7 @@ def main() -> None:
         config=build_objective(),
         max_loops=3,
     )
-    tuned = tuner.solve(
-        arterial,
-        prior=solution,
-        alignment_builder=alignment,
-        band_loss_weight=0.5,
-    )
+    tuned = tuner.solve(arterial, prior=solution)
     if tuned.status != "optimal":
         raise RuntimeError(f"unexpected stage2 status: {tuned.status}")
 
@@ -285,8 +254,6 @@ def main() -> None:
 
     print(
         f"  band_objective={tuned.band_objective:.3f}, "
-        f"band_loss={tuned.band_loss:.3f}, "
-        f"band_score={tuned.band_score:.3f}, "
         f"intersection_loss={tuned.intersection_loss:.3f}"
     )
     print(f"Stage 2 JSON 已保存到 {tuned_json_path}")

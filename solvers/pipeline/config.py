@@ -6,7 +6,6 @@
     ├── BandObjectiveConfig
     │   ├── mode
     │   ├── objective: ObjectiveConfig
-    │   ├── alignment_builder
     │   └── band_loss_weight
     └── IntersectionLossConfig
         ├── loss_builder
@@ -21,10 +20,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..core.objective import ObjectiveConfig
-from ..builders.signal_constraints import (AlignmentLossBuilder,
-                                           ConstraintBuilder,
+from ..builders.signal_constraints import (ConstraintBuilder,
                                            SegmentLossBuilder)
+from ..core.objective import ObjectiveConfig
 
 
 @dataclass
@@ -33,17 +31,14 @@ class BandObjectiveConfig:
 
     Attributes:
         mode: "global" 或 "oneway"。
-            影响 oneway 预设目标的构造以及 bandwidth 输出口径；
-            注意 AlignmentLossBuilder 不再受 mode 影响，始终只做上下行
-            全局带对齐。
+            影响 oneway 预设目标的构造以及 bandwidth 输出口径。
         objective: ObjectiveConfig，定义 SumGroup / BalanceGroup。
-        alignment_builder: 绿波带对齐损失（只处理上下行全局带）。
-        band_loss_weight: alignment loss 的权重 λ。
+        band_loss_weight: 带层软损失权重 λ，作用于 ``kind="band"`` 的
+            ``SegmentLossSpec`` / ``LinearSpec``。
     """
 
     mode: str = "global"
     objective: ObjectiveConfig = field(default_factory=ObjectiveConfig)
-    alignment_builder: AlignmentLossBuilder | None = None
     band_loss_weight: float = 0.0
 
     def validate(self) -> None:

@@ -89,7 +89,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
         prior: Solution | None = None,
         loss_builder: SegmentLossBuilder | None = None,
         constraint_builder: ConstraintBuilder | None = None,
-        alignment_builder=None,
         max_loss: float | None = None,
         max_intersection_loss: float | None = None,
         band_loss_weight: float = 0.0,
@@ -229,10 +228,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
             return specs
 
         band_specs: list[LinearSpec] = []
-        if alignment_builder is not None:
-            # AlignmentLossBuilder 现在只处理上下行全局带对齐。
-            band_specs.extend(alignment_builder.to_linear_specs(int_names))
-
         intersection_specs: list[LinearSpec] = []
         for i, plan in enumerate(selected):
             intersection_specs.extend(build_prefixed_specs(plan.signal_constraints, int_names[i]))

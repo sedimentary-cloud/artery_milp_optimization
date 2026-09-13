@@ -5,7 +5,7 @@
 - Stage 1：方案/窗口选择 + 带宽目标；
 - Stage 2：锁定方案后，优化段级端点、业务约束与带宽；
 - intersection_loss：段级软损失 + 软 LinearSpec slack；
-- band_loss：AlignmentLossBuilder 等绿波带层软损失。
+- band_loss：kind="band" 的通用带层软损失。
 
 推荐入口：
 
@@ -47,7 +47,6 @@ class TwoStageSolver(Solver):
         )
         s1 = stage1.solve(
             arterial,
-            alignment_builder=cfg.band.alignment_builder,
             band_loss_weight=cfg.band.band_loss_weight,
         )
 
@@ -63,7 +62,6 @@ class TwoStageSolver(Solver):
                 prior=s1,
                 loss_builder=cfg.intersection.loss_builder,
                 constraint_builder=cfg.intersection.constraint_builder,
-                alignment_builder=cfg.band.alignment_builder,
                 band_loss_weight=cfg.band.band_loss_weight,
                 objective="bandwidth",
                 tunable_intersections=cfg.intersection.tunable_intersections,
@@ -92,7 +90,6 @@ class EpsilonConstraintRunner:
         self.mode = config.band.mode
         self.loss_builder = config.intersection.loss_builder
         self.constraint_builder = config.intersection.constraint_builder
-        self.alignment_builder = config.band.alignment_builder
         self.band_loss_weight = config.band.band_loss_weight
         self.max_loops = config.max_loops
         self.tunable_intersections = config.intersection.tunable_intersections
@@ -132,7 +129,6 @@ class EpsilonConstraintRunner:
             prior=prior,
             loss_builder=self.loss_builder,
             constraint_builder=self.constraint_builder,
-            alignment_builder=self.alignment_builder,
             band_loss_weight=self.band_loss_weight,
             tunable_intersections=self.tunable_intersections,
             **kwargs,

@@ -9,8 +9,8 @@
 
 """
 
-from .builders import (AlignmentLossBuilder, ConstraintBuilder,
-                       LinearSpec, SegmentLossBuilder, SegmentLossSpec,
+from .builders import (ConstraintBuilder, LinearSpec,
+                       SegmentLossBuilder, SegmentLossSpec,
                        TermValidationContext, TermValidationError,
                        WindowExpr, window_exprs)
 from .core import (BalanceGroup, BandKey, ObjectiveConfig, Solver,
@@ -36,7 +36,6 @@ __all__ = [
     "SegmentLossSpec",
     "ConstraintBuilder",
     "LinearSpec",
-    "AlignmentLossBuilder",
     "SegmentedBandSolver",
     "composite_config",
     "oneway_config",

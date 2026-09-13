@@ -14,7 +14,7 @@
 
 1. 定义路口、路段、干线；
 2. 定义单个交叉口的信号、约束与损失；
-3. 定义绿波带优化目标与对齐损失；
+3. 定义绿波带优化目标与带层损失；
 4. 代码如何自动检查输入配置；
 5. 两阶段 solver 分别做什么；
 6. 输出格式；
@@ -95,9 +95,9 @@ from artery_milp.solvers.pipeline import (
     TwoStageSolver, EpsilonConstraintRunner,
 )
 
-# 高级：跨路口约束/损失、对齐损失
+# 高级：跨路口约束 / 带层损失
 from artery_milp.solvers.builders import (
-    AlignmentLossBuilder, ConstraintBuilder, LinearSpec,
+    ConstraintBuilder, LinearSpec,
     SegmentLossBuilder, SegmentLossSpec,
 )
 ```
@@ -523,7 +523,10 @@ i2 = Intersection("I2", [
 
 ---
 
-## 3. 定义绿波带优化目标与对齐损失
+## 3. 定义绿波带优化目标与带层损失
+
+> 说明：早期的 `AlignmentLossBuilder`（带中心绝对时间对齐）已移除。
+> 新语义（绿波带边缘到绿灯区间边缘的距离控制）计划按“Stage 1 硬边距 + Stage 2 软边距”重新设计；当前版本暂不提供该功能。
 
 ### 3.1 带标识 `BandKey` 语法
 
@@ -664,183 +667,7 @@ ObjectiveConfig(sum_groups=[SumGroup({
 - `BalanceGroup` 组内成员的 `k` 必须相同；
 - 同一个带不能出现在多个 `BalanceGroup` 中。
 
-### 3.5 对齐损失 `AlignmentLossBuilder`
-
-`AlignmentLossBuilder` 用来表达一个很直观的偏好：
-
-> 希望绿波带在某个路口的“中心”尽量接近我给定的目标时刻。
-
-它不改变“带宽越大越好”这个主目标，而是把“实际中心离目标有多远”做成一个软损失，最后通过 `band_loss_weight` 和带宽收益做权衡。
-
-#### 3.5.1 构造参数总览
-
-```python
-AlignmentLossBuilder(
-    targets_up={"I1": 0.10, "I2": 0.50, "I3": 0.90},
-    targets_down={"I1": 0.70, "I2": 0.50, "I3": 0.30},
-    tolerance=0.05,
-    weight_up=0.5,
-    weight_down=0.5,
-)
-```
-
-| 参数 | 类型 | 单位 | 含义 |
-| :--- | :--- | :--- | :--- |
-| `targets_up` | `dict[str, float]` | 周期比例 `0~1` | 上行方向：`路口名 -> 目标带中心时刻` |
-| `targets_down` | `dict[str, float]` | 周期比例 `0~1` | 下行方向：`路口名 -> 目标带中心时刻` |
-| `tolerance` | `float` | 周期比例 | 零惩罚的容差带半径；`0` 表示必须精确对准 |
-| `weight_up` | `float` | 每 1 秒偏差的惩罚系数 | 上行每个目标项的软损失权重 |
-| `weight_down` | `float` | 每 1 秒偏差的惩罚系数 | 下行每个目标项的软损失权重 |
-
-没有出现在 `targets_up / targets_down` 里的路口，不会生成对齐损失。
-
-> 当前 `AlignmentLossBuilder` 只处理上下行**全局绿波带**；局部路段带（`bD_*` / `bU_*`）和窗口带（`winK@...`）不在这里处理。
-
-#### 3.5.2 `targets_up` 对应哪个变量
-
-对上行方向，目标对准的是“带中心”：
-
-```text
-up_center_i = tU_i + 0.5 * b_up
-```
-
-其中：
-
-| 符号 | 含义 |
-| :--- | :--- |
-| `tU_i` | 上行带前沿到达第 `i` 个路口的时刻（秒） |
-| `b_up` | 上行全走廊带宽（秒） |
-| `up_center_i` | 上行带在第 `i` 个路口的中心时刻（秒） |
-
-`targets_up["I2"] = 0.50`、`cycle = 90` 时，目标就是：
-
-```text
-tU_I2 + 0.5 * b_up  ≈  0.50 * 90 = 45 秒
-```
-
-#### 3.5.3 `targets_down` 对应哪个变量
-
-下行方向与上行对称，对准的也是全局带中心：
-
-```text
-down_center_i = tD_i + 0.5 * b_down
-```
-
-因此，`AlignmentLossBuilder` 当前只处理上下行**全局绿波带**：
-
-- 上行：`tU_i + 0.5 * b_up`；
-- 下行：`tD_i + 0.5 * b_down`。
-
-没有写进 `targets_up` / `targets_down` 的路口，不会生成对齐约束。
-
-局部路段带（`bD_*` / `bU_*`）和窗口带（`winK@...`）不在这里处理；如果确实需要逐路段对齐，请用 `SegmentLossSpec` 显式构造。
-
-#### 3.5.4 `tolerance`：容差带怎么起作用
-
-`tolerance` 是一个“零惩罚区间”的半径。对上行第 `i` 个路口，实际损失为：
-
-```text
-penalty_up_i
-= weight_up * max(0, |up_center_i - target_up_i * cycle| - tolerance * cycle)
-```
-
-用人话解释：
-
-- 如果实际中心落在 `target ± tolerance` 以内，**不罚**；
-- 超出容差带后，按“超出容差带的秒数 × weight_up”线性惩罚。
-
-举个例子：`cycle = 90`、`target_up["I2"] = 0.50`、`tolerance = 0.05`：
-
-| 实际 `up_center_I2` | 与目标的偏差 | 是否惩罚 | 惩罚（乘 `weight_up` 前） |
-| :--- | :--- | :--- | :--- |
-| `47s` | `2s` | 否 | `0s` |
-| `52s` | `7s` | 是，超出容差 `2.5s` | `2.5s` |
-| `40s` | `5s` | 是，超出容差 `0.5s` | `0.5s` |
-
-因为目标 `45s`、容差 `0.05 * 90 = 4.5s`，所以零惩罚区间是 `[40.5s, 49.5s]`。
-
-#### 3.5.5 `weight_up / weight_down` 和 `band_loss_weight` 的分工
-
-这两个权重很容易混淆，分工如下：
-
-| 权重 | 作用范围 | 影响什么 |
-| :--- | :--- | :--- |
-| `weight_up / weight_down` | 单个目标项 | 决定 `Solution.band_loss` 里各方向的相对权重大小 |
-| `band_loss_weight` | 整个对齐损失 | 决定“带宽收益 vs 对齐损失”的总权衡，并进入 `band_score` |
-
-具体地：
-
-```text
-band_loss = Σ_i [ weight_up   * max(0, |up_center_i   - up_target_i * C|   - tolerance * C)
-                + weight_down * max(0, |down_center_i - down_target_i * C| - tolerance * C) ]
-
-band_score = band_objective - band_loss_weight * band_loss
-```
-
-求解器内部实际优化的目标是：
-
-```text
-max band_objective - band_loss_weight * band_loss
-```
-
-所以：
-
-- 想让某个方向更重视对齐，就调大 `weight_up / weight_down`；
-- 想让整体目标更偏向对齐，就调大 `band_loss_weight`；
-- 如果只看 `band_objective` 很大但 `band_score` 很小，说明对齐损失在拖后腿。
-
-#### 3.5.6 一个完整算例
-
-假设 `cycle = 90`，配置：
-
-```python
-AlignmentLossBuilder(
-    targets_up={"I1": 0.10, "I2": 0.50, "I3": 0.90},
-    tolerance=0.05,
-    weight_up=0.5,
-)
-band_loss_weight = 0.1
-```
-
-目标换算成秒：
-
-| 路口 | 目标比例 | 目标秒 | 零惩罚区间 |
-| :--- | :--- | :--- | :--- |
-| `I1` | `0.10` | `9s` | `[4.5s, 13.5s]` |
-| `I2` | `0.50` | `45s` | `[40.5s, 49.5s]` |
-| `I3` | `0.90` | `81s` | `[76.5s, 85.5s]` |
-
-假设某次求解得到的实际上行带中心是：
-
-```text
-up_center_I1 = 12s
-up_center_I2 = 52s
-up_center_I3 = 70s
-```
-
-则：
-
-```text
-I1: 12s 在 [4.5, 13.5] 内       -> 0
-I2: 52s 超出上界 49.5s 共 2.5s -> 0.5 * 2.5 = 1.25
-I3: 70s 低于下界 76.5s 共 6.5s -> 0.5 * 6.5 = 3.25
-
-band_loss  = 0 + 1.25 + 3.25 = 4.5
-band_score = band_objective - 0.1 * 4.5 = band_objective - 0.45
-```
-
-#### 3.5.7 最小运行示例
-
-一个完整可运行的对齐损失示例见 7.2 节的 `examples/window_band_ranges_case.py`：
-
-- `targets_up = {I1: 0.10, I2: 0.25, I3: 0.40, I4: 0.55}`
-- `tolerance = 0.0`
-- `weight_up = 1.0`
-- `band_loss_weight = 0.5`
-
-它会同时打印 Stage 1 和 Stage 2 的 `band_objective / band_loss / band_score`，可以直接观察对齐损失如何影响最终得分。
-
-### 3.6 高级：外部约束与软损失
+### 3.5 高级：外部约束与软损失
 
 以下工具适合跨路口、带宽层、临时策略，**不建议**用来描述单个路口内部关系。
 
@@ -942,7 +769,6 @@ from artery_milp.solvers.builders import (
 
 - `ConstraintBuilder`
 - `SegmentLossBuilder`
-- `AlignmentLossBuilder`
 
 校验规则：
 
@@ -1016,8 +842,7 @@ solver = SegmentedBandSolver(
 )
 solution = solver.solve(
     arterial,
-    alignment_builder=None,     # 可选
-    band_loss_weight=0.0,       # 对齐损失权重
+    band_loss_weight=0.0,       # 带层损失权重（kind="band"）
     constraint_builder=None,    # 可选，跨路口约束
     loss_builder=None,          # 可选，跨路口软损失
 )
@@ -1029,7 +854,6 @@ solution = solver.solve(
 - 对每个“方向-段号”实例建立传播时刻 `t`、整数圈数 `m`、逐路段带宽 `width`、全走廊带宽 `global`；
 - 只对“所有候选方案共同拥有”的段号建模；
 - 目标由 `ObjectiveConfig` 决定；
-- 可选对齐损失 `AlignmentLossBuilder`。
 
 `SegmentedBandSolver` 现在必须显式传入 `ObjectiveConfig`。如果只是想在旧的“权重”形式上快速构造目标，可以用：
 
@@ -1071,8 +895,7 @@ solution = tuner.solve(
     prior=stage1_solution,      # 必须提供 Stage 1 的解
     loss_builder=loss_builder,          # 可选，SegmentLossBuilder
     constraint_builder=constraint_builder,  # 可选，ConstraintBuilder
-    alignment_builder=alignment,        # 可选
-    band_loss_weight=0.1,
+    band_loss_weight=0.1,                # 带层损失权重（kind="band"）
     objective="bandwidth",      # bandwidth / loss
     tunable_intersections=None, # None 表示所有路口都可调；否则只调集合内路口
 )
@@ -1083,7 +906,6 @@ solution = tuner.solve(
 - `prior.plan_choices` 决定每个路口使用哪个方案；
 - `term_bounds` 决定哪些端点可调、范围多少；不在其中的端点固定；
 - `FullFlexiblePhaseTuneSolver` 本身不再接收 `mode`；`mode` 只保留在 `TwoStageConfig.band.mode` 等上层配置，用于选择预设目标和输出口径；
-- `AlignmentLossBuilder` 始终只做上下行全局带对齐，不受任何 `mode` 影响；
 - `up_global_output` / `down_global_output` 控制输出口径；
 - `tunable_intersections` 可以进一步限制哪些路口允许调；
 - `objective="bandwidth"` 主优化带宽；
@@ -1118,7 +940,6 @@ config = TwoStageConfig(
     band=BandObjectiveConfig(
         mode="global",
         objective=objective,
-        alignment_builder=alignment,
         band_loss_weight=0.1,
     ),
     intersection=IntersectionLossConfig(
@@ -1270,7 +1091,7 @@ class Solution:
 | 字段 | 含义 |
 | :--- | :--- |
 | `band_objective` | 带层收益，`SumGroup + BalanceGroup` 部分 |
-| `band_loss` | 带层软损失，主要来自 `AlignmentLossBuilder` / `kind="band"` |
+| `band_loss` | 带层软损失，主要来自 `kind="band"` 的 `SegmentLossSpec` |
 | `band_score` | `band_objective - band_loss_weight * band_loss`，带层真实得分 |
 | `intersection_loss` | 交叉口层软损失：`kind="intersection"` 的损失 + 软 `LinearSpec` slack |
 | `objective` | solver 原始目标值，不同 solver/模式语义不同 |
@@ -1314,7 +1135,6 @@ plot_pareto_frontier(
 - 3 个路口、2 个路段；
 - `I2` 有 2 段上行/下行，并带内部 `SignalConstraint`、`SignalLoss` 和 `term_bounds`；
 - 双向全局带 + 均衡目标；
-- 对齐损失；
 - Stage 1 + 两阶段求解。
 
 ```python
@@ -1322,7 +1142,6 @@ from artery_milp.models import (
     Arterial, GreenWindow, Intersection, Segment,
     SignalConstraint, SignalLoss, SignalPlan,
 )
-from artery_milp.solvers.builders import AlignmentLossBuilder
 from artery_milp.solvers.core import BalanceGroup, ObjectiveConfig, SumGroup
 from artery_milp.solvers.pipeline import (
     BandObjectiveConfig, IntersectionLossConfig, TwoStageConfig, TwoStageSolver,
@@ -1401,18 +1220,10 @@ sol1 = stage1.solve(arterial)
 print("Stage 1:", sol1.status, sol1.plan_choices)
 
 # ---- 两阶段 ----
-alignment = AlignmentLossBuilder(
-    targets_up={"I1": 0.10, "I2": 0.50, "I3": 0.90},
-    tolerance=0.05,
-    weight_up=0.5,
-)
-
 config = TwoStageConfig(
     band=BandObjectiveConfig(
         mode="global",
         objective=objective,
-        alignment_builder=alignment,
-        band_loss_weight=0.1,
     ),
     intersection=IntersectionLossConfig(
         tunable_intersections=None,   # 所有路口都可调
@@ -1425,8 +1236,6 @@ print("Stage 2:", sol2.status)
 print("plan_choices:", sol2.plan_choices)
 print("segment_times I2:", sol2.segment_times.get("I2"))
 print("band_objective:", sol2.band_objective)
-print("band_loss:", sol2.band_loss)
-print("band_score:", sol2.band_score)
 print("intersection_loss:", sol2.intersection_loss)
 print("multi_bandwidths:", sol2.multi_bandwidths)
 ```
@@ -1447,8 +1256,7 @@ PYTHONPATH=/home/qktx ./conda-envs/artery_milp/bin/python your_script.py
 - 一个路口多个候选方案；
 - 方案内部 `SignalConstraint` / `SignalLoss`；
 - 给 `split_priority` 配置第二阶段可调范围 `metadata["term_bounds"]`；
-- 配置一个简单的上行对齐损失 `AlignmentLossBuilder`；
-- Stage 1 求解后输出重点窗口带 `down.win3@I2-I4`，并打印 `band_loss` / `band_score`；
+- Stage 1 求解后输出重点窗口带 `down.win3@I2-I4`，并打印 `band_objective`；
 - Stage 1 之后继续运行 Stage 2，打印 `term_bounds` 带来的端点微调；
 - 输出 JSON 与时空图。
 
@@ -1457,21 +1265,7 @@ cd /home/qktx/artery_milp
 ./conda-envs/artery_milp/bin/python examples/window_band_ranges_case.py
 ```
 
-其中对齐损失的配置是：
-
-```python
-AlignmentLossBuilder(
-    targets_up={"I1": 0.10, "I2": 0.25, "I3": 0.40, "I4": 0.55},
-    tolerance=0.0,
-    weight_up=1.0,
-)
-```
-
-它表示“希望上行带中心依次落在 0.10 / 0.25 / 0.40 / 0.55 个周期”，并以 `band_loss_weight=0.5` 进入目标：
-
-```text
-band_score = band_objective - 0.5 * band_loss
-```
+> 当前示例不再包含 `AlignmentLossBuilder`；带层损失功能暂不存在。
 
 Stage 1 会输出：
 
@@ -1480,7 +1274,7 @@ Stage 1 会输出：
 局部绿波带时间范围示例
 求解状态: optimal
 选中的方案: {'I1': 'baseline', 'I2': 'split_priority', 'I3': 'baseline', 'I4': 'baseline'}
-带层得分: band_objective=32.354, band_loss=1.036, band_score=31.836
+band_objective=32.354
 重点窗口带: down.win3@I2-I4
   实例 1: bandwidth=13.36s, time=[18.90, 59.40]
     I2: start=46.04s, end=59.40s
@@ -1501,7 +1295,7 @@ Stage 2 端点微调（term_bounds 生效）
   up.1.end: 名义 26.10s -> 调整后 27.90s, 允许范围 [24.30, 27.90]s
   up.1.start: 名义 13.50s -> 调整后 11.70s, 允许范围 [11.70, 15.30]s
   up.2.start: 名义 27.90s -> 调整后 29.70s, 允许范围 [27.00, 29.70]s
-  band_objective=35.751, band_loss=2.071, band_score=34.716, intersection_loss=1.350
+  band_objective=35.751, intersection_loss=1.350
 ```
 
 并生成：
@@ -1621,6 +1415,7 @@ Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个
 - `composite_config` / `oneway_config` / `build_objective_config` 位于 `solvers/core/objective.py`；
 - Stage 2 只保留 `FullFlexiblePhaseTuneSolver`，不再有 `FlexiblePhaseTuneSolver` / `PhaseTuneSolver` 包装层；
 - Stage 1 只保留 `SegmentedBandSolver`，必须显式传入 `ObjectiveConfig`，旧的 `SegmentedBandObjective` 已移除；
-- 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` / `AlignmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
+- 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
+- `AlignmentLossBuilder` 已删除，当前版本不提供对齐损失；未来计划按“Stage 1 硬边距 + Stage 2 软边距”重新引入；
 - `ObjectiveConfig` 里的 band key（如 `up.seg5`）目前由 `parse_band_key` 解析，但尚未做完整的段号边界校验，非法段号可能在后续建模阶段报错；
 - 仓库里可能残留 Windows 的 `*:Zone.Identifier` 文件，可安全删除。
