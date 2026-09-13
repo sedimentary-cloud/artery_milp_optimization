@@ -25,7 +25,7 @@ GLOBAL_BAND_ZORDER = 3
 GLOBAL_UP_COLOR = "#4AC52E"
 GLOBAL_DOWN_COLOR = "#3077e2"
 
-WINDOW_BAND_ALPHA = 0.02
+WINDOW_BAND_ALPHA = 0.10
 WINDOW_BAND_ZORDER = 3.4
 # 兼容旧名字：没有方向信息的窗口 key 默认按下行处理。
 WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
@@ -56,7 +56,7 @@ def _window_facecolor_by_span(color: str,
     if max_window <= 2:
         return _window_facecolor(color)
     level = max(0.0, min(1.0, (max_window - span_k) / max(max_window - 2, 1)))
-    alpha = WINDOW_BAND_ALPHA + 0.12 * level
+    alpha = WINDOW_BAND_ALPHA + 0.22 * level
     return _band_facecolor(color, alpha)
 
 
@@ -101,6 +101,69 @@ def _time_max(arterial: Arterial, solution: Solution | None = None) -> float:
             band_max = max(band_values)
 
     return max(t_up, t_dn) + band_max + arterial.cycle
+
+
+def _draw_window_bands(ax,
+                       solution: Solution | None,
+                       pos: list[float],
+                       names: list[str],
+                       band_k_min: int,
+                       k_max: int,
+                       max_band_window: int,
+                       cycle: float) -> None:
+    """绘制所有局部窗口带（与全局 multi_bandwidths 的段号无关）。
+
+    这样即使某个段号没有全局带（例如只在部分子走廊上可用），
+    它的局部窗口带也会被画出来。
+    """
+    if solution is None:
+        return
+
+    grouped: dict[str, list[dict[str, object]]] = {"up": [], "down": []}
+    for entries in getattr(solution, "window_band_ranges", {}).values():
+        for entry in entries:
+            direction = entry.get("direction")
+            if direction in grouped:
+                grouped[direction].append(entry)
+
+    for direction in ("up", "down"):
+        color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
+        ordered_entries = sorted(
+            grouped[direction],
+            key=lambda entry: (
+                -len(entry.get("intersections", [])),
+                names.index(entry["intersections"][0])
+                if entry.get("intersections") else 0,
+            ),
+        )
+        for entry in ordered_entries:
+            intersections = entry.get("intersections", [])
+            if not intersections:
+                continue
+            k = len(intersections)
+            if k < 2 or k > max_band_window or k >= len(names):
+                continue
+            bw = float(entry.get("bandwidth", 0.0))
+            if bw <= 0:
+                continue
+            ps = [pos[names.index(name)] for name in intersections]
+            ts = [
+                float(entry["intersection_ranges"][name]["start"])
+                for name in intersections
+            ]
+            facecolor = _window_facecolor_by_span(color, k, max_band_window)
+            edgecolor = _band_facecolor(color, 0.55)
+            for kk in range(band_k_min, k_max + 1):
+                t_shifted = [t + kk * cycle for t in ts]
+                ax.add_patch(_poly_band(
+                    ps,
+                    t_shifted,
+                    bw,
+                    facecolor=facecolor,
+                    edgecolor=edgecolor,
+                    linewidth=0.35,
+                    zorder=WINDOW_BAND_ZORDER,
+                ))
 
 
 def plot_time_space(arterial: Arterial,
@@ -277,9 +340,15 @@ def plot_time_space(arterial: Arterial,
     ax.legend(handles=handles, loc="lower right", fontsize=9)
 
     # --- 绿波带 ---
-    if solution is not None and has_multi_bands:
+    # 计算带子需要从多早的周期开始绘制，保证 xlim 左侧也有带子。
+    band_k_min = k_min
+    if solution is not None:
         segs = arterial.segment_order
-        band_values = []
+        band_values = (
+            list(solution.bandwidth_up.values())
+            + list(solution.bandwidth_down.values())
+            + list(solution.window_bands.values())
+        )
         for width_map in solution.multi_bandwidths.values():
             band_values.extend(width_map.values())
         for direction_map in getattr(solution, "multi_window_bands", {}).values():
@@ -292,6 +361,21 @@ def plot_time_space(arterial: Arterial,
         )
         band_k_min = k_min - math.ceil((max_travel_time + max_band_width) / C)
 
+        # 局部窗口带独立绘制：不再受 multi_bandwidths 段号限制，
+        # 因此“只有部分子走廊拥有第 2 段”的情况也会画出来。
+        _draw_window_bands(
+            ax,
+            solution,
+            pos,
+            names,
+            band_k_min,
+            k_max,
+            max_band_window,
+            C,
+        )
+
+    if solution is not None and has_multi_bands:
+        segs = arterial.segment_order
         for direction, color, hatch in (
             ("up", GLOBAL_UP_COLOR, GLOBAL_UP_HATCH),
             ("down", GLOBAL_DOWN_COLOR, GLOBAL_DOWN_HATCH),
@@ -310,47 +394,7 @@ def plot_time_space(arterial: Arterial,
                     continue
                 raw_times = [float(time_map[name]) for name in names]
                 t_series = _unwrap_multi_band_times(direction, raw_times, segs, C)
-                range_entries = []
-                for key, entries in getattr(solution, "window_band_ranges", {}).items():
-                    for entry in entries:
-                        if (
-                            entry.get("direction") == direction
-                            and int(entry.get("segment_no") or 0) == segment_no
-                        ):
-                            range_entries.append((key, entry))
-                if range_entries:
-                    ordered_range_entries = sorted(
-                        range_entries,
-                        key=lambda item: (
-                            -len(item[1].get("intersections", [])),
-                            names.index(item[1]["intersections"][0]) if item[1].get("intersections") else 0,
-                        ),
-                    )
-                    for key, entry in ordered_range_entries:
-                        intersections = entry.get("intersections", [])
-                        if not intersections:
-                            continue
-                        k = len(intersections)
-                        if k > max_band_window:
-                            continue
-                        if k >= len(names):
-                            continue
-                        bw = float(entry.get("bandwidth", 0.0))
-                        if bw <= 0:
-                            continue
-                        ps = [pos[names.index(name)] for name in intersections]
-                        ts = [
-                            float(entry["intersection_ranges"][name]["start"])
-                            for name in intersections
-                        ]
-                        for kk in range(band_k_min, k_max + 1):
-                            t_shifted = [t + kk * C for t in ts]
-                            ax.add_patch(_poly_band(
-                                ps, t_shifted, bw,
-                                facecolor=_window_facecolor_by_span(color, k, max_band_window),
-                                edgecolor="none",
-                                zorder=WINDOW_BAND_ZORDER,
-                            ))
+
                 if width > 0:
                     alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (segment_no - 1))
                     for k in range(band_k_min, k_max + 1):
@@ -394,8 +438,6 @@ def plot_time_space(arterial: Arterial,
 
     elif solution is not None and solution.band_start_up:
         segs = arterial.segment_order
-
-        # 带前沿的绝对时刻：沿行驶方向按行驶时间递推（不再 mod 周期）
         tU = [solution.band_start_up[names[0]]]
         for i, seg in enumerate(segs):
             tU.append(tU[-1] + seg.travel_time_up)
@@ -404,23 +446,6 @@ def plot_time_space(arterial: Arterial,
         for i in range(len(segs) - 1, -1, -1):
             tD[i] = tD[i + 1] + segs[i].travel_time_down
 
-        # 绿波带从更负的周期开始绘制，让画面左侧也有带子覆盖。
-        # 注意：这里只影响绿波带，xlim 和灯条仍使用原来的 k_min/k_max。
-        band_values = (
-            list(solution.bandwidth_up.values())
-            + list(solution.bandwidth_down.values())
-            + list(solution.window_bands.values())
-        )
-        max_band_width = max(band_values, default=0.0)
-        max_travel_time = max(
-            sum(seg.travel_time_up for seg in segs),
-            sum(seg.travel_time_down for seg in segs),
-        )
-        band_k_min = k_min - math.ceil((max_travel_time + max_band_width) / C)
-
-        # ============================================================
-        # 图层 1：全局绿波带
-        # ============================================================
         global_specs: dict[str, tuple[list[float], float, str, str] | None] = {
             "up": None,
             "down": None,
@@ -465,52 +490,6 @@ def plot_time_space(arterial: Arterial,
                     hatch=hatch,
                     zorder=GLOBAL_BAND_ZORDER,
                 ))
-
-        # ============================================================
-        # 图层 2：窗口绿波带（win2 两两路口、win3 三个一组……）
-        # ============================================================
-        if has_window_bands:
-            grouped_entries: dict[str, list[dict[str, object]]] = {"up": [], "down": []}
-            for key, entries in getattr(solution, "window_band_ranges", {}).items():
-                for entry in entries:
-                    direction = entry.get("direction")
-                    if direction in grouped_entries:
-                        grouped_entries[direction].append(entry)
-
-            for direction in ("up", "down"):
-                color = WINDOW_UP_COLOR if direction == "up" else WINDOW_DOWN_COLOR
-                ordered_entries = sorted(
-                    grouped_entries[direction],
-                    key=lambda entry: (
-                        -len(entry.get("intersections", [])),
-                        names.index(entry["intersections"][0]) if entry.get("intersections") else 0,
-                    ),
-                )
-                for entry in ordered_entries:
-                    intersections = entry.get("intersections", [])
-                    if not intersections:
-                        continue
-                    k = len(intersections)
-                    if k > max_band_window:
-                        continue
-                    if k >= len(names):
-                        continue
-                    bw = float(entry.get("bandwidth", 0.0))
-                    if bw <= 0:
-                        continue
-                    ps = [pos[names.index(name)] for name in intersections]
-                    ts = [
-                        float(entry["intersection_ranges"][name]["start"])
-                        for name in intersections
-                    ]
-                    for kk in range(band_k_min, k_max + 1):
-                        t_shifted = [t + kk * C for t in ts]
-                        ax.add_patch(_poly_band(
-                            ps, t_shifted, bw,
-                            facecolor=_window_facecolor_by_span(color, k, max_band_window),
-                            edgecolor="none",
-                            zorder=WINDOW_BAND_ZORDER,
-                        ))
 
     ax.set_xlim(t_min, t_max)
     ax.set_ylim(-0.05 * pos[-1], 1.05 * pos[-1])
