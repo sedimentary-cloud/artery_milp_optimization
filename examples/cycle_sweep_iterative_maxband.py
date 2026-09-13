@@ -5,7 +5,7 @@
 - 干线、路口、信号方案和约束来自 ``build_comparison_arterial()``；
 - 目标使用 3.1 的 ``global_sum``，即最大化所有全局 band 的带宽和；
 - 求解器只使用 Stage 1（``SegmentedBandSolver``），不运行 Stage 2；
-- 遍历公共周期 C = 40, 42, ..., 120 秒，记录 3.1 口径的带层得分并绘制折线图。
+- 遍历公共周期 C = 40, 42, ..., 180 秒，记录 3.1 口径的带层得分并绘制折线图。
 
 输出：
 
@@ -41,7 +41,7 @@ from artery_milp.examples.objective_templates_comparison import (
 
 OUTPUT_DIR = Path(__file__).resolve().parent
 CYCLE_START = 40.0
-CYCLE_STOP = 120.0
+CYCLE_STOP = 180.0
 CYCLE_STEP = 2.0
 
 
