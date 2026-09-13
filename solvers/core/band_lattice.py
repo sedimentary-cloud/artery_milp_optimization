@@ -589,7 +589,7 @@ def fill_solution_local_band_records(solution,
         solution.multi_window_bands.setdefault(direction, {}).setdefault(band_no, {})[key] = bandwidth
         aggregated[key] = aggregated.get(key, 0.0) + bandwidth
 
-        if bandwidth <= 0 or len(used_names) != k:
+        if bandwidth <= 1e-9 or len(used_names) != k:
             continue
 
         time_values: list[float] = []
@@ -677,7 +677,7 @@ def fill_solution_missing_window_bands(solution,
                     )[key] = float(bandwidth)
                     added[key] = added.get(key, 0.0) + float(bandwidth)
 
-                    if bandwidth <= 0:
+                    if bandwidth <= 1e-9:
                         continue
 
                     used_names = int_names[start:start + k]

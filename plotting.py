@@ -142,7 +142,7 @@ def _draw_window_bands(ax,
             if k < 2 or k > max_band_window or k >= len(names):
                 continue
             bw = float(entry.get("bandwidth", 0.0))
-            if bw <= 0:
+            if bw <= 1e-9:
                 continue
             ps = [pos[names.index(name)] for name in intersections]
             ts = [
@@ -380,66 +380,61 @@ def plot_time_space(arterial: Arterial,
         ):
             widths = solution.multi_bandwidths.get(direction, {})
             starts = solution.multi_band_starts.get(direction, {})
-            direction_has_positive_global = any(
-                float(v) > 1e-9 for v in widths.values()
-            )
-            fallback_global_by_segment = {
-                int(entry["segment_no"]): entry
-                for entry in global_range_entries.get(direction, [])
-                if entry.get("segment_no") is not None
-            }
-            for segment_no in sorted(widths):
+
+            # 只画正宽度的全局 band；零宽度、负零、负值全部过滤掉。
+            positive_segment_numbers = [
+                int(k) for k, v in widths.items() if float(v) > 1e-9
+            ]
+            direction_has_positive_global = bool(positive_segment_numbers)
+
+            for segment_no in sorted(positive_segment_numbers):
                 width = float(widths[segment_no])
                 time_map = starts.get(segment_no, {})
                 if not time_map:
                     continue
                 raw_times = [float(time_map[name]) for name in names]
                 t_series = _unwrap_multi_band_times(direction, raw_times, segs, C)
-
-                if width > 0:
-                    alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (segment_no - 1))
-                    for k in range(band_k_min, k_max + 1):
-                        shift = k * C
-                        for i in range(len(segs)):
-                            ax.add_patch(_quad(
-                                pos[i],
-                                pos[i + 1],
-                                t_series[i] + shift,
-                                t_series[i + 1] + shift,
-                                width,
-                                facecolor=_band_facecolor(color, alpha),
-                                edgecolor=color,
-                                linewidth=BAND_HATCH_LINEWIDTH,
-                                hatch=hatch,
-                                zorder=GLOBAL_BAND_ZORDER,
-                            ))
-                    continue
-
-                # 如果该方向已经有正宽度全局带，就不再用局部全走廊带补位，
-                # 避免同一方向多画一条重复的全局样式带。
-                if direction_has_positive_global:
-                    continue
-                fallback_entry = fallback_global_by_segment.get(segment_no)
-                if fallback_entry is None:
-                    continue
-                ts = [
-                    float(fallback_entry["intersection_ranges"][name]["start"])
-                    for name in names
-                ]
-                bw = float(fallback_entry["bandwidth"])
                 alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (segment_no - 1))
                 for k in range(band_k_min, k_max + 1):
-                    t_shifted = [t + k * C for t in ts]
-                    ax.add_patch(_poly_band(
-                        pos,
-                        t_shifted,
-                        bw,
-                        facecolor=_band_facecolor(color, alpha),
-                        edgecolor=color,
-                        linewidth=BAND_HATCH_LINEWIDTH,
-                        hatch=hatch,
-                        zorder=GLOBAL_BAND_ZORDER,
-                    ))
+                    shift = k * C
+                    for i in range(len(segs)):
+                        ax.add_patch(_quad(
+                            pos[i],
+                            pos[i + 1],
+                            t_series[i] + shift,
+                            t_series[i + 1] + shift,
+                            width,
+                            facecolor=_band_facecolor(color, alpha),
+                            edgecolor=color,
+                            linewidth=BAND_HATCH_LINEWIDTH,
+                            hatch=hatch,
+                            zorder=GLOBAL_BAND_ZORDER,
+                        ))
+
+            # 如果该方向完全没有正宽度全局带，才用正宽度的全走廊局部带补位。
+            if not direction_has_positive_global:
+                for fallback_entry in global_range_entries.get(direction, []):
+                    bw = float(fallback_entry.get("bandwidth", 0.0))
+                    if bw <= 1e-9:
+                        continue
+                    ts = [
+                        float(fallback_entry["intersection_ranges"][name]["start"])
+                        for name in names
+                    ]
+                    fallback_band_no = int(fallback_entry.get("band_no") or 1)
+                    alpha = max(0.18, GLOBAL_BAND_ALPHA - 0.1 * (fallback_band_no - 1))
+                    for k in range(band_k_min, k_max + 1):
+                        t_shifted = [t + k * C for t in ts]
+                        ax.add_patch(_poly_band(
+                            pos,
+                            t_shifted,
+                            bw,
+                            facecolor=_band_facecolor(color, alpha),
+                            edgecolor=color,
+                            linewidth=BAND_HATCH_LINEWIDTH,
+                            hatch=hatch,
+                            zorder=GLOBAL_BAND_ZORDER,
+                        ))
 
     elif solution is not None and solution.band_start_up:
         segs = arterial.segment_order
