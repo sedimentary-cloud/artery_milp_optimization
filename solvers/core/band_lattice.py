@@ -682,7 +682,10 @@ def fill_solution_missing_window_bands(solution,
                     entry = {
                         "direction": direction,
                         "band_no": band_no,
-                        "segment_no": None,
+                        # 这里用 band_no 作为 segment_no 兼容键，
+                        # 让 plot_time_space 在全局带宽为 0 时可以把这条
+                        # 全走廊局部带回退绘制成 Global Band 样式。
+                        "segment_no": band_no,
                         "bandwidth": float(bandwidth),
                         "intersections": used_names,
                         "time_min": min(t_series) if t_series else 0.0,
