@@ -150,13 +150,14 @@ def build_window_range_case() -> Arterial:
                 ],
                 # Stage 2 只会在这些范围内微调对应端点；未列出的端点保持名义值。
                 metadata={
+                    # 每个区间以名义值为中心，把可调宽度扩大到原来的 2 倍。
                     "term_bounds": {
-                        "up.1.start":   (0.13, 0.17),
-                        "up.1.end":     (0.27, 0.31),
-                        "up.2.start":   (0.30, 0.33),
-                        "down.1.start": (0.28, 0.34),
-                        "down.1.end":   (0.58, 0.64),
-                        "down.2.start": (0.66, 0.72),
+                        "up.1.start":   (0.11, 0.19),
+                        "up.1.end":     (0.25, 0.33),
+                        "up.2.start":   (0.285, 0.345),
+                        "down.1.start": (0.25, 0.37),
+                        "down.1.end":   (0.55, 0.67),
+                        "down.2.start": (0.63, 0.75),
                     }
                 },
             ),
