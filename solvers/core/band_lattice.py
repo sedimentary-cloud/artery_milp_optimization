@@ -640,13 +640,15 @@ def fill_solution_missing_window_bands(solution,
     existing_keys = set(solution.window_band_ranges.keys())
     added: dict[str, float] = {}
 
-    # 从主解里推断每个方向建模了多少条 band；没有主解信息时默认 3 条。
+    # 从主解里推断每个方向建模了多少条 band；
+    # 局部窗口最多补 2 条，避免对称性和变量数量过大。
     band_count = 1
     for direction_map in solution.multi_bandwidths.values():
         if direction_map:
             band_count = max(band_count, max(int(k) for k in direction_map.keys()))
     if band_count <= 0:
-        band_count = 3
+        band_count = 2
+    local_band_count = min(2, band_count)
 
     for direction in ("up", "down"):
         for k in range(2, min(max_window, n) + 1):
@@ -667,7 +669,7 @@ def fill_solution_missing_window_bands(solution,
                     segs=segs,
                     cycle=cycle,
                     max_loops=max_loops,
-                    n_bands=band_count,
+                    n_bands=local_band_count,
                 )
                 for band_no, bandwidth, t_series, window_choices in solved_list:
                     solution.multi_window_bands.setdefault(direction, {}).setdefault(

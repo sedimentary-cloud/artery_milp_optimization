@@ -88,12 +88,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
                                        prior: Solution | None,
                                        key: str,
                                        fallback_numbers: list[int]) -> list[int]:
-        """从 Stage 1 结果恢复局部 band 编号。"""
+        """从 Stage 1 结果恢复局部 band 编号，并限制局部最多 2 条。"""
         if prior is not None:
             choices = prior.local_band_window_choices.get(key)
             if choices:
-                return sorted(int(v) for v in choices.keys())
-        return list(fallback_numbers)
+                return sorted(int(v) for v in choices.keys())[:2]
+        return list(fallback_numbers)[:2]
 
     def solve(
         self,
@@ -226,7 +226,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
         local_bands_by_spec: dict[tuple[str, int, int], list[int]] = {}
         for direction, k, start in local_specs:
             key = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
-            fallback = active_by_direction.get(direction, [1])
+            fallback = active_by_direction.get(direction, [1])[:2]
             band_numbers = self._local_band_numbers_from_prior(prior, key, fallback)
             local_bands_by_spec[(direction, k, start)] = band_numbers
             for band_no in band_numbers:

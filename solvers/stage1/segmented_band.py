@@ -1112,10 +1112,10 @@ class SegmentedBandSolver(Solver):
     def _local_band_numbers(self, direction: str, start: int, k: int) -> list[int]:
         """一个局部窗口里要建模几条 band。
 
-        当前简单实现：每个方向都建模 max_bands 条，
-        例如 max_bands=3 时返回 [1,2,3]。
+        局部窗口最多需要 2 条 band，因此这里取 ``min(max_bands, 2)``。
+        这样可以减少对称性和 0/1 变量数量。
         """
-        return list(range(1, self.max_bands + 1))
+        return list(range(1, min(self.max_bands, 2) + 1))
 
     @staticmethod
     def _segment_window(plan: SignalPlan, direction: str, window_no: int):
