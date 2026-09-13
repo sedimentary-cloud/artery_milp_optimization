@@ -5,10 +5,11 @@
 - ``IterativeTwoStageSolver`` 会把 Stage 2 微调后的绿灯端点写回
   ``Arterial``，再重新跑 Stage 1 的窗口分配，直到窗口分配稳定。
 
-收敛判据只检查窗口分配：
-- 如果本轮窗口分配与上一轮相同，视为收敛；
-- 如果窗口分配进入循环，返回“重复状态出现前一轮”的解：
-  A -> B -> A 返回 B，A -> B -> C -> B 返回 C；
+收敛判据同时检查窗口分配和 Stage 2 实际得分：
+- 窗口分配重复且 Stage 2 得分不再显著提高，才判定收敛/震荡；
+- 如果重复状态下得分仍在显著提高，则继续迭代；
+- 连续同一状态得分不再提高 -> ``iterative_converged``；
+- 回到历史状态且得分未超过该状态历史最佳 -> ``iterative_cycle``；
 - 每轮 Stage 2 都必须返回 optimal，否则抛出 ``RuntimeError``。
 """
 
@@ -27,13 +28,21 @@ class IterativeTwoStageSolver(Solver):
 
     name = "iterative-two-stage"
 
-    def __init__(self, config: TwoStageConfig, max_iterations: int = 10) -> None:
-        """函数名：__init__；参数：TwoStageConfig、最大迭代次数；返回值：无；异常：ValueError。"""
+    def __init__(
+        self,
+        config: TwoStageConfig,
+        max_iterations: int = 10,
+        score_tol: float = 1e-8,
+    ) -> None:
+        """函数名：__init__；参数：TwoStageConfig、最大迭代次数、得分容差；返回值：无；异常：ValueError。"""
         config.validate()
         if int(max_iterations) <= 0:
             raise ValueError("max_iterations 必须为正")
+        if float(score_tol) < 0:
+            raise ValueError("score_tol 不能为负")
         self.config = config
         self.max_iterations = int(max_iterations)
+        self.score_tol = float(score_tol)
         self.history: list[Solution] = []
 
     def solve(self, arterial: Arterial) -> Solution:
@@ -58,8 +67,11 @@ class IterativeTwoStageSolver(Solver):
 
         current_arterial = arterial
         history: list[Solution] = []
-        seen_states: dict[tuple, int] = {}
+        # 每个窗口分配状态对应的历史最佳 Stage 2 得分。
+        state_best_score: dict[tuple, float] = {}
         previous_state: tuple | None = None
+        best_solution: Solution | None = None
+        best_score = float("-inf")
 
         for iteration in range(1, self.max_iterations + 1):
             s1 = stage1.solve(
@@ -92,42 +104,75 @@ class IterativeTwoStageSolver(Solver):
 
             history.append(s2)
             state = self._window_assignment_state(s2)
+            score = float(s2.band_score)
 
-            # 连续两轮窗口分配相同：窗口分配已经稳定。
-            if previous_state is not None and state == previous_state:
-                s2.status = f"{s2.status}|iterative_converged"
-                s2.solver_msg = (
-                    f"{s2.solver_msg}; iterative converged at iteration {iteration}"
+            # 记录全局最佳解，避免最终返回得分回落的解。
+            if best_solution is None or self._score_improved(score, best_score):
+                best_solution = s2
+                best_score = score
+
+            previous_best = state_best_score.get(state)
+            if previous_best is None:
+                state_best_score[state] = score
+                previous_state = state
+                current_arterial = self._clone_arterial_with_tuned_windows(
+                    current_arterial, s2
                 )
-                self.history = history
-                return s2
+                continue
 
-            # 窗口分配进入循环：返回“重复状态出现前一轮”的解。
-            # 例如 A -> B -> C -> B，选择 C；A -> B -> A，选择 B。
-            if state in seen_states:
-                result = history[-2]
-                result.status = f"{result.status}|iterative_cycle"
+            # 窗口分配重复，但 Stage 2 得分仍在显著提高：继续迭代。
+            if self._score_improved(score, previous_best):
+                state_best_score[state] = score
+                previous_state = state
+                current_arterial = self._clone_arterial_with_tuned_windows(
+                    current_arterial, s2
+                )
+                continue
+
+            # 窗口分配重复且得分不再提高：
+            # - 连续同一状态：收敛；
+            # - 回到更早的历史状态：震荡。
+            if previous_state == state:
+                result = s2
+                if self._score_improved(best_score, score):
+                    result = best_solution
+                result.status = f"{result.status}|iterative_converged"
                 result.solver_msg = (
-                    f"{result.solver_msg}; oscillation cycle detected at "
-                    f"iteration {iteration}, returned predecessor of repeated state"
+                    f"{result.solver_msg}; iterative converged at iteration "
+                    f"{iteration}: window assignment repeated and Stage 2 "
+                    "score did not improve"
                 )
                 self.history = history
                 return result
 
-            seen_states[state] = len(history) - 1
-            previous_state = state
-            current_arterial = self._clone_arterial_with_tuned_windows(
-                current_arterial, s2
+            predecessor = history[-2] if len(history) >= 2 else s2
+            result = predecessor
+            if (
+                best_solution is not None
+                and self._score_improved(best_score, float(predecessor.band_score))
+            ):
+                result = best_solution
+            result.status = f"{result.status}|iterative_cycle"
+            result.solver_msg = (
+                f"{result.solver_msg}; oscillation cycle detected at iteration "
+                f"{iteration}: window assignment repeated and Stage 2 score "
+                "did not improve"
             )
+            self.history = history
+            return result
 
-        last = history[-1]
+        last = best_solution if best_solution is not None else history[-1]
         last.status = f"{last.status}|iterative_max_iter"
         last.solver_msg = (
             f"{last.solver_msg}; iterative reached max_iterations="
-            f"{self.max_iterations}"
+            f"{self.max_iterations}, returned best-scoring solution"
         )
         self.history = history
         return last
+
+    def _score_improved(self, score: float, reference: float) -> bool:
+        """判断 Stage 2 得分是否相对 reference 有显著提高。"""
+        return float(score) > float(reference) + self.score_tol
 
     @staticmethod
     def _window_assignment_state(solution: Solution) -> tuple:

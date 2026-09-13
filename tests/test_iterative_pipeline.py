@@ -50,8 +50,15 @@ def make_arterial() -> Arterial:
     )
 
 
-def fake_solution(window_i2: int, status: str = "optimal") -> Solution:
+def fake_solution(
+    window_i2: int,
+    status: str = "optimal",
+    score: float = 0.0,
+) -> Solution:
     sol = Solution(cycle=CYCLE, status=status)
+    sol.band_objective = float(score)
+    sol.band_loss = 0.0
+    sol.band_loss_weight = 0.0
     sol.plan_choices = {"I1": "p1", "I2": "p2", "I3": "p3"}
     sol.band_window_choices = {
         "up": {
@@ -126,6 +133,54 @@ class IterativePipelineLogicTests(unittest.TestCase):
         self.assertIs(result, third)
         self.assertIn("iterative_cycle", result.status)
         self.assertEqual(len(solver.history), 4)
+
+    def test_same_assignment_with_score_improvement_continues(self):
+        first = fake_solution(window_i2=1, score=0.0)
+        second = fake_solution(window_i2=1, score=5.0)
+        third = fake_solution(window_i2=1, score=5.0)
+        with patch.object(SegmentedBandSolver, "solve", return_value=first), \
+             patch.object(FullFlexiblePhaseTuneSolver, "solve", side_effect=[first, second, third]):
+            solver = IterativeTwoStageSolver(self.make_config(), max_iterations=5)
+            result = solver.solve(make_arterial())
+
+        # 同一窗口分配，但第 2 轮 Stage 2 得分提高，不能提前收敛。
+        self.assertIs(result, third)
+        self.assertIn("iterative_converged", result.status)
+        self.assertEqual(len(solver.history), 3)
+
+    def test_repeated_state_with_score_improvement_is_not_cycle(self):
+        first = fake_solution(window_i2=1, score=0.0)
+        second = fake_solution(window_i2=2, score=0.0)
+        third = fake_solution(window_i2=1, score=5.0)
+        fourth = fake_solution(window_i2=1, score=5.0)
+        with patch.object(SegmentedBandSolver, "solve", return_value=first), \
+             patch.object(
+                 FullFlexiblePhaseTuneSolver,
+                 "solve",
+                 side_effect=[first, second, third, fourth],
+             ):
+            solver = IterativeTwoStageSolver(self.make_config(), max_iterations=5)
+            result = solver.solve(make_arterial())
+
+        # A -> B -> A 回到了历史状态 A，但 Stage 2 得分从 0 提升到 5，
+        # 因此不能判定为震荡，应继续到下一轮得分不再提高。
+        self.assertIs(result, fourth)
+        self.assertIn("iterative_converged", result.status)
+        self.assertNotIn("iterative_cycle", result.status)
+        self.assertEqual(len(solver.history), 4)
+
+    def test_max_iterations_returns_best_scoring_solution(self):
+        first = fake_solution(window_i2=1, score=10.0)
+        second = fake_solution(window_i2=2, score=5.0)
+        with patch.object(SegmentedBandSolver, "solve", return_value=first), \
+             patch.object(FullFlexiblePhaseTuneSolver, "solve", side_effect=[first, second]):
+            solver = IterativeTwoStageSolver(self.make_config(), max_iterations=2)
+            result = solver.solve(make_arterial())
+
+        # 第二轮得分回落，达到 max_iterations 时返回历史最佳解 first。
+        self.assertIs(result, first)
+        self.assertIn("iterative_max_iter", result.status)
+        self.assertEqual(len(solver.history), 2)
 
     def test_stage2_failure_raises(self):
         first = fake_solution(window_i2=1)
