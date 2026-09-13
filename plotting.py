@@ -132,10 +132,6 @@ def plot_time_space(arterial: Arterial,
     names = [v.name for v in ints]
     pos = _positions(arterial)
 
-    # 局部导入，避免 plotting 在包初始化阶段与 solvers 产生循环依赖。
-    from .solvers.builders.signal_constraints import (direction_phase_name,
-                                                      phase_start_times)
-
     # 最终显示区间从 0 开始；右边界动态计算。
     # 绘制周期仍从负值开始（k_min = -1），负时间部分会被 xlim 截断。
     t_min = 0.0
@@ -203,37 +199,8 @@ def plot_time_space(arterial: Arterial,
                     int(solution.window_choices.get(inter.name, {}).get("down_window", 0)),
                     len(down_windows_to_draw) - 1,
                 )]
-        # 第二阶段相位优化后，用 phase_times 反算选中方案的绿灯窗。
-        # phase_start_times 会把 phase_lost_times 作为常数间隔计入。
-        elif (solution is not None
-                and inter.name in solution.phase_times
-                and plan.phases):
-            pt = solution.phase_times[inter.name]
-            starts = phase_start_times(plan, pt)
-            wc = (solution.window_choices.get(inter.name)
-                  if solution.window_choices else None)
-            if wc and wc.get("up_phase"):
-                up_name = wc["up_phase"]
-            else:
-                try:
-                    up_name = direction_phase_name(plan, "up")
-                except (ValueError, NotImplementedError):
-                    up_name = plan.up_phase
-            if wc and wc.get("down_phase"):
-                down_name = wc["down_phase"]
-            else:
-                try:
-                    down_name = direction_phase_name(plan, "down")
-                except (ValueError, NotImplementedError):
-                    down_name = plan.down_phase
-            if up_name in starts and up_name in pt:
-                us = starts[up_name]
-                win_up = GreenWindow(us / C, (us + float(pt[up_name])) / C)
-            if down_name in starts and down_name in pt:
-                ds = starts[down_name]
-                win_dn = GreenWindow(ds / C, (ds + float(pt[down_name])) / C)
         # 需要绘制的绿灯窗口集合。
-        # 有 phase_times 时，使用反算出的单窗口；否则绘制方案里的全部绿灯窗口。
+        # 有 segment_times 时，使用反算出的段级窗口；否则绘制方案里的全部绿灯窗口。
         if (solution is not None
                 and inter.name in solution.segment_times):
             up_windows_to_draw = [
@@ -254,11 +221,6 @@ def plot_time_space(arterial: Arterial,
                 if f"down.{idx}.start" in solution.segment_times[inter.name]
                 and f"down.{idx}.end" in solution.segment_times[inter.name]
             ]
-        elif (solution is not None
-                and inter.name in solution.phase_times
-                and plan.phases):
-            up_windows_to_draw = [win_up]
-            down_windows_to_draw = [win_dn]
         else:
             up_windows_to_draw = list(plan.up_windows)
             down_windows_to_draw = list(plan.down_windows)
@@ -286,35 +248,32 @@ def plot_time_space(arterial: Arterial,
         wc = (solution.window_choices.get(inter.name)
               if solution is not None and solution.window_choices else None)
         if wc and wc.get("up_segment"):
-            label_up_phase = wc["up_segment"]
-        elif wc and wc.get("up_phase"):
-            label_up_phase = wc["up_phase"]
+            label_up = wc["up_segment"]
+        elif wc and "up_window" in wc:
+            up_idx = int(wc["up_window"])
+            label_up = f"up.{up_idx + 1}" if up_idx >= 0 else None
         else:
-            try:
-                label_up_phase = direction_phase_name(plan, "up")
-            except (ValueError, NotImplementedError):
-                label_up_phase = None
-        if wc and wc.get("down_segment"):
-            label_down_phase = wc["down_segment"]
-        elif wc and wc.get("down_phase"):
-            label_down_phase = wc["down_phase"]
-        else:
-            try:
-                label_down_phase = direction_phase_name(plan, "down")
-            except (ValueError, NotImplementedError):
-                label_down_phase = None
+            label_up = "up.1" if plan.up_windows else None
 
-        phase_labels = []
-        if label_up_phase:
-            phase_labels.append((f"{inter.name}.{label_up_phase}",
+        if wc and wc.get("down_segment"):
+            label_down = wc["down_segment"]
+        elif wc and "down_window" in wc:
+            down_idx = int(wc["down_window"])
+            label_down = f"down.{down_idx + 1}" if down_idx >= 0 else None
+        else:
+            label_down = "down.1" if plan.down_windows else None
+
+        labels = []
+        if label_up:
+            labels.append((f"{inter.name}.{label_up}",
                                  pos[i] + h / 2))
-        if label_down_phase:
-            phase_labels.append((f"{inter.name}.{label_down_phase}",
+        if label_down:
+            labels.append((f"{inter.name}.{label_down}",
                                  pos[i] - h / 2))
-        for phase_text, phase_y in phase_labels:
+        for label_text, label_y in labels:
             for k in range(k_min, k_max + 1):
                 bar_center_x = k * C + C / 2.0
-                ax.text(bar_center_x, phase_y, phase_text,
+                ax.text(bar_center_x, label_y, label_text,
                         ha="center", va="center", fontsize=5.0,
                         color="black", zorder=21, clip_on=True,
                         bbox=dict(facecolor="white", edgecolor="none",

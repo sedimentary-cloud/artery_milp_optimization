@@ -32,34 +32,6 @@ class GreenWindow:
         return self.end - self.start
 
 
-@dataclass
-class Phase:
-    """一个可调相位的绿灯时长配置。
-
-    attributes:
-        name: 相位名称；
-        green: 当前/默认绿灯时长（秒）；
-        min_green: 该相位绿灯时长下限（秒）；
-        max_green: 该相位绿灯时长上限（秒）；
-        serves: 该相位服务的方向集合，取值可包含 "up" / "down"。
-            例如 serves=("up", "down") 表示该相位同时服务上下行。
-    """
-
-    name: str
-    green: float = 0.0
-    min_green: float = 0.0
-    max_green: float = 999.0
-    serves: tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        for direction in self.serves:
-            if direction not in ("up", "down"):
-                raise ValueError(
-                    f"Phase {self.name} 的 serves 只能是 up/down，"
-                    f"当前为 {direction!r}"
-                )
-
-
 @dataclass(frozen=True)
 class SignalConstraint:
     """路口级业务约束声明。
@@ -123,8 +95,7 @@ class SignalPlan:
     - ``signal_constraints``：路口内部的业务约束声明，引用段起止时刻。
 
     兼容旧入口：
-    - ``up_windows`` / ``down_windows`` 仍可使用，内部会映射到新字段；
-    - ``phases`` 等旧字段暂时保留，供旧求解器继续工作。
+    - ``up_windows`` / ``down_windows`` 仍可使用，内部会映射到新字段。
     """
 
     def __init__(
@@ -137,11 +108,6 @@ class SignalPlan:
         *,
         up_windows: list[GreenWindow] | None = None,
         down_windows: list[GreenWindow] | None = None,
-        phases: list[Phase] | None = None,
-        up_phase: str | None = None,
-        down_phase: str | None = None,
-        lost_time: float = 0.0,
-        phase_lost_times: dict[str, float] | None = None,
         metadata: dict[str, object] | None = None,
     ) -> None:
         """函数名：__init__；参数：方案名、多段绿区间、业务约束等；返回值：无；异常：ValueError。"""
@@ -150,11 +116,6 @@ class SignalPlan:
         self.down_segments = list(down_segments if down_segments is not None else (down_windows or []))
         self.signal_constraints = list(signal_constraints or [])
         self.signal_losses = list(signal_losses or [])
-        self.phases = list(phases or [])
-        self.up_phase = up_phase
-        self.down_phase = down_phase
-        self.lost_time = float(lost_time)
-        self.phase_lost_times = dict(phase_lost_times or {})
         self.metadata = dict(metadata or {})
         self._validate_segments("up", self.up_segments)
         self._validate_segments("down", self.down_segments)
@@ -263,44 +224,6 @@ class SignalPlan:
     def down_windows(self) -> list[GreenWindow]:
         """函数名：down_windows；参数：无；返回值：下行区间列表；异常：无。"""
         return self.down_segments
-
-    def total_lost_time(self) -> float:
-        """函数名：total_lost_time；参数：无；返回值：总损失时间；异常：无。"""
-        return float(self.lost_time + sum(self.phase_lost_times.values()))
-
-    def phase_by_name(self, name: str) -> Phase:
-        """函数名：phase_by_name；参数：name；返回值：Phase；异常：KeyError。"""
-        for ph in self.phases:
-            if ph.name == name:
-                return ph
-        raise KeyError(f"方案 {self.name} 没有相位 {name}")
-
-    def serving_phase_names(self, direction: str) -> list[str]:
-        """函数名：serving_phase_names；参数：direction；返回值：相位名列表；异常：无。"""
-        return [ph.name for ph in self.phases if direction in ph.serves]
-
-    def direction_phase_names(self, direction: str) -> list[str]:
-        """函数名：direction_phase_names；参数：direction；返回值：相位名列表；异常：ValueError。"""
-        if direction not in ("up", "down"):
-            raise ValueError(f"未知方向: {direction}")
-
-        explicit = self.up_phase if direction == "up" else self.down_phase
-        if explicit is not None:
-            names = {ph.name for ph in self.phases}
-            if explicit not in names:
-                raise ValueError(
-                    f"方案 {self.name} 的 {direction}_phase={explicit!r} "
-                    f"不在 phases 中"
-                )
-            return [explicit]
-
-        served = self.serving_phase_names(direction)
-        if not served:
-            raise ValueError(
-                f"方案 {self.name} 无法解析 {direction} 方向相位："
-                f"请设置 {direction}_phase 或给 Phase.serves 添加 {direction}"
-            )
-        return served
 
     def up_green_ratio(self) -> float:
         """函数名：up_green_ratio；参数：无；返回值：上行总绿信比；异常：无。"""

@@ -607,7 +607,6 @@ class SegmentedBandSolver(Solver):
         sol.band_loss = float(band_loss)
         sol.band_score = float(band_objective - band_loss_weight * band_loss)
         sol.intersection_loss = float(intersection_loss)
-        sol.total_phase_loss = float(intersection_loss)
         sol.objective = -float(result.fun)
         sol.status = "optimal" if result.success else result.message
         return sol

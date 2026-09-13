@@ -11,7 +11,6 @@ class Solution:
 
     attributes:
         cycle: 公共周期（秒），通常与 Arterial.cycle 一致；
-        offsets: 各路口相位差（秒，相对于干线起点路口）；
         plan_choices: 各路口选中的信控方案名；
         bandwidth_up / bandwidth_down: 各路段的上/下行带宽（秒）。
             全局一条带（MAXBAND 风格）时各路段取相同值；
@@ -21,7 +20,6 @@ class Solution:
     """
 
     cycle: float
-    offsets: dict[str, float] = field(default_factory=dict)
     plan_choices: dict[str, str] = field(default_factory=dict)
     bandwidth_up: dict[str, float] = field(default_factory=dict)
     bandwidth_down: dict[str, float] = field(default_factory=dict)
@@ -38,8 +36,6 @@ class Solution:
     # 每个 entry 描述一个局部绿波带实例在各路口上的起止时间，
     # 适合直接用于绘图、导出和下游分析。
     window_band_ranges: dict[str, list[dict[str, object]]] = field(default_factory=dict)
-    # 相位时长：路口名 -> 相位名 -> 秒（第二阶段优化后回填）
-    phase_times: dict[str, dict[str, float]] = field(default_factory=dict)
     # 段级时刻：路口名 -> "up.1.start"/"down.2.end" -> 秒。
     segment_times: dict[str, dict[str, float]] = field(default_factory=dict)
     # 窗口选择：路口名 -> {"plan": 方案名, "up_window": 下标, "down_window": 下标}
@@ -59,14 +55,9 @@ class Solution:
     band_loss: float = 0.0
     band_score: float = 0.0
 
-    # ---- 交叉口/相位层损失 ----
-    # 相位 hinge loss + 软 LinearSpec slack 违反量。
+    # ---- 交叉口层损失 ----
+    # 信号损失 + 软 LinearSpec slack 违反量。
     intersection_loss: float = 0.0
-
-    # 兼容旧字段；新代码请直接使用 intersection_loss。
-    # 新语义下 total_phase_loss 等于 intersection_loss，
-    # 即相位 hinge loss + 软 LinearSpec slack，不再包含 alignment。
-    total_phase_loss: float = 0.0
     objective: float = 0.0
     status: str = "unknown"
     solver_msg: str = ""
@@ -80,7 +71,6 @@ class Solution:
         """序列化为普通字典，便于存储/展示。"""
         return {
             "cycle": self.cycle,
-            "offsets": self.offsets,
             "plan_choices": self.plan_choices,
             "bandwidth_up": self.bandwidth_up,
             "bandwidth_down": self.bandwidth_down,
@@ -90,7 +80,6 @@ class Solution:
             "band_start_down": self.band_start_down,
             "window_bands": self.window_bands,
             "window_band_ranges": self.window_band_ranges,
-            "phase_times": self.phase_times,
             "segment_times": self.segment_times,
             "window_choices": self.window_choices,
             "multi_bandwidths": self.multi_bandwidths,
@@ -100,7 +89,6 @@ class Solution:
             "band_loss": self.band_loss,
             "band_score": self.band_score,
             "intersection_loss": self.intersection_loss,
-            "total_phase_loss": self.total_phase_loss,
             "objective": self.objective,
             "status": self.status,
             "solver_msg": self.solver_msg,

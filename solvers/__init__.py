@@ -12,8 +12,7 @@
 from .builders import (AlignmentLossBuilder, ConstraintBuilder,
                        LinearSpec, SegmentLossBuilder, SegmentLossSpec,
                        TermValidationContext, TermValidationError,
-                       WindowExpr, direction_phase_name,
-                       phase_start_times, window_exprs)
+                       WindowExpr, window_exprs)
 from .core import (BalanceGroup, BandKey, ObjectiveConfig, Solver,
                    SumGroup, build_objective_config,
                    composite_config, oneway_config, parse_band_key)
@@ -32,8 +31,6 @@ __all__ = [
     "ObjectiveConfig",
     "parse_band_key",
     "WindowExpr",
-    "direction_phase_name",
-    "phase_start_times",
     "window_exprs",
     "SegmentLossBuilder",
     "SegmentLossSpec",

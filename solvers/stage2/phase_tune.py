@@ -12,8 +12,8 @@ from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
 from ..core.objective import BandKey, ObjectiveConfig, parse_band_key
 from ..builders.signal_constraints import (ConstraintBuilder, LinearSpec,
-                                           PhaseLossBuilder, scale_linear_spec,
-                                           window_exprs)
+                                           SegmentLossBuilder,
+                                           scale_linear_spec, window_exprs)
 from ..builders.term_validation import TermValidationContext
 
 
@@ -87,7 +87,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
         self,
         arterial: Arterial,
         prior: Solution | None = None,
-        loss_builder: PhaseLossBuilder | None = None,
+        loss_builder: SegmentLossBuilder | None = None,
         constraint_builder: ConstraintBuilder | None = None,
         alignment_builder=None,
         max_loss: float | None = None,
@@ -710,7 +710,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
         sol.band_loss = float(band_loss)
         sol.band_score = float(band_objective - band_loss_weight * band_loss)
         sol.intersection_loss = float(intersection_loss)
-        sol.total_phase_loss = float(intersection_loss)
         sol.objective = -float(result.fun)
         sol.status = "optimal" if result.success else result.message
         return sol

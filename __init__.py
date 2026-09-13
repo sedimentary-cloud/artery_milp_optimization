@@ -1,6 +1,6 @@
 """greenwave: 干线绿波协调优化（建模骨架）。"""
 
-from .models import (Arterial, GreenWindow, Intersection, Phase, Segment,
+from .models import (Arterial, GreenWindow, Intersection, Segment,
                      SignalConstraint, SignalPlan)
 from .plotting import plot_pareto_frontier, plot_time_space
 from .solution import Solution
@@ -8,7 +8,6 @@ from .solution import Solution
 __all__ = [
     "Arterial",
     "GreenWindow",
-    "Phase",
     "Intersection",
     "Segment",
     "SignalConstraint",

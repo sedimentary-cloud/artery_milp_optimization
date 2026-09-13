@@ -917,7 +917,6 @@ LinearSpec(
 | `SignalPlan` | 同方向多段按时间排序、不重叠 |
 | `SignalConstraint` | `sense` 合法；term 必须存在于本方案；当前窗口值必须满足该约束 |
 | `SignalLoss` | 至少一个阈值；斜率非负；term 必须存在于本方案 |
-| `Phase` | `serves` 只能是 `up/down` |
 | `Arterial` | `cycle > 0`；`order` 奇数长度、路口/路段交替且都已注册 |
 
 ### 4.2 目标配置校验 `ObjectiveConfig.validate(n)`
@@ -1200,8 +1199,6 @@ class Solution:
     plan_choices: dict[str, str]
     window_choices: dict[str, dict[str, int | str]]
     segment_times: dict[str, dict[str, float]]
-    phase_times: dict[str, dict[str, float]]
-    offsets: dict[str, float]
 
     # 带宽结果
     bandwidth_up: dict[str, float]
@@ -1223,7 +1220,6 @@ class Solution:
     band_loss: float
     band_score: float
     intersection_loss: float
-    total_phase_loss: float   # 兼容旧字段，等于 intersection_loss
     objective: float          # solver 原始目标
     status: str
     solver_msg: str
@@ -1237,14 +1233,13 @@ class Solution:
 | `plan_choices` | `路口名 -> 方案名`，Stage 1 选中的方案；Stage 2 沿用 |
 | `window_choices` | `路口名 -> {"plan": ..., "up_window": 0, ...}`，记录窗口/段号选择 |
 | `segment_times` | Stage 2 最重要字段：`路口名 -> term -> 秒`，例如 `{"I2": {"up.1.start": 9.0, ...}}`；Stage 1 通常为空 |
-| `phase_times` / `offsets` | 旧相位/offset 兼容字段；当前主路径优先看 `segment_times` 和 `band_start_*` |
 
 ### 6.3 带宽结果
 
 | 字段 | 含义 |
 | :--- | :--- |
 | `bandwidth_up` / `bandwidth_down` | 兼容口径摘要：`物理路段名 -> 带宽秒`。全局口径下各路段同值；local 口径下逐路段不同 |
-| `band_up_style` / `band_down_style` | `global` / `local` / `multi`，提示当前方向带宽结果口径 |
+| `band_up_style` / `band_down_style` | 结果口径标记；当前两个主 solver 固定输出 `multi` |
 | `band_start_up` / `band_start_down` | 聚合带在各路口的到达时刻（秒，`mod cycle`） |
 | `multi_bandwidths` | `方向 -> 段号 -> 全走廊带宽秒`，多段模型最原始结果 |
 | `multi_band_starts` | `方向 -> 段号 -> 路口 -> 到达时刻秒`，适合解包轨迹/画图 |
@@ -1278,7 +1273,6 @@ class Solution:
 | `band_loss` | 带层软损失，主要来自 `AlignmentLossBuilder` / `kind="band"` |
 | `band_score` | `band_objective - band_loss_weight * band_loss`，带层真实得分 |
 | `intersection_loss` | 交叉口层软损失：`kind="intersection"` 的损失 + 软 `LinearSpec` slack |
-| `total_phase_loss` | 兼容字段，当前等于 `intersection_loss` |
 | `objective` | solver 原始目标值，不同 solver/模式语义不同 |
 
 ### 6.5 序列化与绘图

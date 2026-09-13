@@ -5,9 +5,6 @@
 - 每个段端点使用 `up.1.start` / `down.2.end` 这类 term 标识；
 - 第二阶段求解器直接围绕这些段端点变量建模。
 
-兼容性说明：
-- 仍保留 `PhaseLossBuilder` 名称，作为段级损失的别名；
-- 仍保留 `phase_start_times / direction_phase_name`，仅供旧图面与历史代码回退。
 """
 
 from __future__ import annotations
@@ -32,31 +29,6 @@ class WindowExpr:
     down_labels: list[str] = field(default_factory=list)
     term_names: list[str] = field(default_factory=list)
     term_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
-
-
-def direction_phase_name(plan: SignalPlan, direction: str) -> str:
-    """函数名：direction_phase_name；参数：plan、direction；返回值：旧相位名；异常：NotImplementedError。"""
-    names = plan.direction_phase_names(direction)
-    if len(names) != 1:
-        raise NotImplementedError(
-            f"方案 {plan.name} 的 {direction} 方向有多个服务相位: {names}"
-        )
-    return names[0]
-
-
-def phase_start_times(plan: SignalPlan, phase_times: dict[str, float] | None = None) -> dict[str, float]:
-    """函数名：phase_start_times；参数：plan、phase_times；返回值：旧相位开始时刻；异常：无。"""
-    starts: dict[str, float] = {}
-    acc = 0.0
-    for ph in plan.phases:
-        starts[ph.name] = acc
-        g = (
-            float(phase_times[ph.name])
-            if phase_times is not None and ph.name in phase_times
-            else float(ph.green)
-        )
-        acc += g + float(plan.phase_lost_times.get(ph.name, 0.0))
-    return starts
 
 
 def window_exprs(plan: SignalPlan, cycle: float) -> WindowExpr:
@@ -167,7 +139,6 @@ class SegmentLossBuilder:
         return out
 
 
-PhaseLossBuilder = SegmentLossBuilder
 
 
 @dataclass
