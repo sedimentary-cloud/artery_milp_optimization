@@ -407,3 +407,50 @@ def oneway_config(up_weight: float = 1.0,                        # 上行全局�
             terms[key] = effective_weight                        # 加入归一化后的窗口权重
 
     return ObjectiveConfig(sum_groups=[SumGroup(terms)])         # 所有项放进一个 SumGroup
+
+
+def build_objective_config(
+    *,
+    mode: str = "global",
+    objective_config: ObjectiveConfig | None = None,
+    up_weight: float = 1.0,
+    down_weight: float = 1.0,
+    window_weights: dict[int, float] | None = None,
+    segment_down_weights: dict[str, float] | None = None,
+    objective_mode: str = "sum",
+    balance_eps: float = 0.1,
+    balance_terms: tuple[str, ...] = ("up", "down"),
+    n_intersections: int = 0,
+    normalize_window_weights: bool = True,
+) -> ObjectiveConfig:
+    """把 mode/权重形式的旧配置统一翻译成 ``ObjectiveConfig``。
+
+    这是原先 Stage 2 包装器内部配置构造逻辑的外移版本：
+
+    - 如果显式给了 ``objective_config``，直接返回；
+    - ``mode="global"``：使用 ``composite_config``；
+    - ``mode="oneway"``：使用 ``oneway_config``；
+    - 其他 mode：抛 ``ValueError``。
+    """
+    if objective_config is not None:
+        return objective_config
+
+    if mode == "global":
+        return composite_config(
+            up_weight=up_weight,
+            down_weight=down_weight,
+            objective_mode=objective_mode,
+            balance_eps=balance_eps,
+            balance_terms=balance_terms,
+        )
+
+    if mode == "oneway":
+        return oneway_config(
+            up_weight=up_weight,
+            window_weights=window_weights,
+            segment_down_weights=segment_down_weights,
+            n_intersections=n_intersections,
+            normalize_window_weights=normalize_window_weights,
+        )
+
+    raise ValueError(f"unknown mode: {mode}")

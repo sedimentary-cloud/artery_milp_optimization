@@ -1,7 +1,6 @@
 """两阶段求解的统一配置对象。
 
-这个文件把之前散落在 TwoStageSolver / PhaseTuneSolver
-参数里的配置收敛到 dataclass：
+这个文件把两阶段求解的配置收敛到 dataclass：
 
     TwoStageConfig
     ├── BandObjectiveConfig

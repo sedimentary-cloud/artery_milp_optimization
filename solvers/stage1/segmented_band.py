@@ -5,7 +5,6 @@
 - 路口多方案选择；
 - ObjectiveConfig 目标 DSL；
 - AlignmentLossBuilder 带层软损失；
-- 兼容旧版 SegmentedBandObjective 入口。
 
 约束说明：
 - 每个方向的第 r 段只与各路口同编号第 r 段协调；
@@ -16,8 +15,6 @@
 """
 
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp
@@ -30,32 +27,11 @@ from ..builders.term_validation import (TermValidationContext,
 from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
 from ..core.base import Solver
-from ..core.objective import BalanceGroup, ObjectiveConfig, SumGroup, parse_band_key
+from ..core.objective import ObjectiveConfig, parse_band_key
 
 
 BandInstance = tuple[str, int]
 LatticeInstance = tuple[str, int, int, int]
-
-
-@dataclass(frozen=True)
-class SegmentedBandObjective:
-    """多段带旧版目标配置。"""
-
-    up_weight: float = 1.0
-    down_weight: float = 1.0
-    mode: str = "sum"
-    balance_eps: float = 0.1
-    balance_directions: tuple[str, ...] = ("up", "down")
-
-    def validate(self) -> None:
-        """函数名：validate；参数：无；返回值：无；异常：ValueError。"""
-        if self.mode not in ("sum", "balanced", "balanced_composite"):
-            raise ValueError(f"未知目标模式: {self.mode}")
-        if self.balance_eps < 0:
-            raise ValueError("balance_eps 不能为负")
-        for direction in self.balance_directions:
-            if direction not in ("up", "down"):
-                raise ValueError(f"未知均衡方向: {direction}")
 
 
 class SegmentedBandSolver(Solver):
@@ -65,29 +41,19 @@ class SegmentedBandSolver(Solver):
 
     def __init__(
         self,
-        objective: SegmentedBandObjective | ObjectiveConfig | None = None,
+        config: ObjectiveConfig,
         *,
-        config: ObjectiveConfig | None = None,
         max_segments: int = 3,
         max_loops: int = 3,
         name: str = "segmented-band",
-        up_style: str = "global",
-        down_style: str = "global",
         up_global_output: bool = False,
         down_global_output: bool = False,
     ) -> None:
-        """函数名：__init__；参数：objective/config、最大段数、最大圈数、输出风格；返回值：无；异常：ValueError。"""
-        if config is None and isinstance(objective, ObjectiveConfig):
-            config = objective
-            objective = None
-
-        self.legacy_objective = objective if isinstance(objective, SegmentedBandObjective) else None
+        """函数名：__init__；参数：config、最大段数、最大圈数、输出口径；返回值：无；异常：ValueError。"""
         self.config = config
         self.max_segments = int(max_segments)
         self.max_loops = int(max_loops)
         self.name = name
-        self.up_style = up_style
-        self.down_style = down_style
         self.up_global_output = bool(up_global_output)
         self.down_global_output = bool(down_global_output)
 
@@ -95,9 +61,6 @@ class SegmentedBandSolver(Solver):
             raise ValueError("max_segments 必须为正")
         if self.max_loops < 0:
             raise ValueError("max_loops 不能为负")
-        if self.config is None:
-            self.legacy_objective = self.legacy_objective or SegmentedBandObjective()
-            self.legacy_objective.validate()
 
     def solve(
         self,
@@ -120,7 +83,7 @@ class SegmentedBandSolver(Solver):
         if n < 2:
             raise ValueError("SegmentedBandSolver 至少需要两个路口")
 
-        config = self._build_objective_config()
+        config = self.config
         config.validate(n)
         options = self._build_plan_options(ints)
         band_instances = self._common_band_instances(options)
@@ -531,8 +494,8 @@ class SegmentedBandSolver(Solver):
         )
 
         sol = Solution(cycle=cycle, solver_msg=f"HiGHS via scipy: success={result.success}")
-        sol.band_up_style = "multi" if active_by_direction["up"] else self.up_style
-        sol.band_down_style = "multi" if active_by_direction["down"] else self.down_style
+        sol.band_up_style = "multi"
+        sol.band_down_style = "multi"
         if result.x is None:
             sol.status = "infeasible"
             return sol
@@ -648,34 +611,6 @@ class SegmentedBandSolver(Solver):
         sol.objective = -float(result.fun)
         sol.status = "optimal" if result.success else result.message
         return sol
-
-    def _build_objective_config(self) -> ObjectiveConfig:
-        """函数名：_build_objective_config；参数：无；返回值：ObjectiveConfig；异常：ValueError。"""
-        if self.config is not None:
-            return self.config
-
-        objective = self.legacy_objective or SegmentedBandObjective()
-        objective.validate()
-        if objective.mode == "sum":
-            return ObjectiveConfig(sum_groups=[SumGroup({
-                "up.global": objective.up_weight,
-                "down.global": objective.down_weight,
-            })])
-
-        members = [f"{direction}.global" for direction in objective.balance_directions]
-        if objective.mode == "balanced":
-            return ObjectiveConfig(balance_groups=[BalanceGroup(members, weight=1.0, eps=0.0)])
-
-        if objective.mode == "balanced_composite":
-            return ObjectiveConfig(
-                sum_groups=[SumGroup({
-                    "up.global": objective.up_weight,
-                    "down.global": objective.down_weight,
-                })],
-                balance_groups=[BalanceGroup(members, weight=objective.balance_eps, eps=0.0)],
-            )
-
-        raise ValueError(f"未知目标模式: {objective.mode}")
 
     @staticmethod
     def _build_plan_options(intersections) -> list[list[SignalPlan]]:

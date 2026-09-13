@@ -10,8 +10,7 @@ from ...solution import Solution
 from ..core.base import Solver
 from ..core.band_lattice import (fill_solution_multi_window_bands,
                                  fill_solution_window_band_ranges)
-from ..core.objective import (BandKey, ObjectiveConfig, composite_config,
-                              oneway_config, parse_band_key)
+from ..core.objective import BandKey, ObjectiveConfig, parse_band_key
 from ..builders.signal_constraints import (ConstraintBuilder, LinearSpec,
                                            PhaseLossBuilder, scale_linear_spec,
                                            window_exprs)
@@ -33,16 +32,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
         max_loops: int = 3,
         up_global_output: bool = True,
         down_global_output: bool = False,
-        up_style: str | None = None,
-        down_style: str | None = None,
     ) -> None:
-        """函数名：__init__；参数：config、max_loops、输出风格；返回值：无；异常：无。"""
+        """函数名：__init__；参数：config、max_loops、输出口径；返回值：无；异常：无。"""
         self.config = config
         self.max_loops = max_loops
         self.up_global_output = up_global_output
         self.down_global_output = down_global_output
-        self.up_style = up_style or ("global" if up_global_output else "local")
-        self.down_style = down_style or ("global" if down_global_output else "local")
 
     @staticmethod
     def _available_bands(plans: list[SignalPlan]) -> list[BandInstance]:
@@ -679,8 +674,9 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops)
         fill_solution_window_band_ranges(sol, arterial)
-        sol.band_up_style = "multi" if sol.multi_bandwidths["up"] else self.up_style
-        sol.band_down_style = "multi" if sol.multi_bandwidths["down"] else self.down_style
+        # 当前 solver 始终输出多段带，风格固定为 multi。
+        sol.band_up_style = "multi"
+        sol.band_down_style = "multi"
 
         band_loss = 0.0
         intersection_loss = 0.0
@@ -718,149 +714,3 @@ class FullFlexiblePhaseTuneSolver(Solver):
         sol.objective = -float(result.fun)
         sol.status = "optimal" if result.success else result.message
         return sol
-
-
-class FlexiblePhaseTuneSolver(Solver):
-    """完整新架构求解器：段级窗口变量 + ObjectiveConfig。"""
-
-    name = "flexible-phase-tune"
-
-    def __init__(
-        self,
-        config: ObjectiveConfig,
-        mode: str = "global",
-        down_weight: float = 1.0,
-        up_weight: float = 1.0,
-        window_weights: dict[int, float] | None = None,
-        max_loops: int = 3,
-    ) -> None:
-        """函数名：__init__；参数：config、mode 等；返回值：无；异常：无。"""
-        self.config = config
-        self.mode = mode
-        self.down_weight = down_weight
-        self.up_weight = up_weight
-        self.window_weights = window_weights
-        self.max_loops = max_loops
-
-    def solve(
-        self,
-        arterial: Arterial,
-        prior: Solution | None = None,
-        loss_builder=None,
-        constraint_builder=None,
-        alignment_builder=None,
-        max_loss: float | None = None,
-        max_intersection_loss: float | None = None,
-        band_loss_weight: float = 0.0,
-        objective: str = "bandwidth",
-        tunable_intersections: set[str] | None = None,
-    ) -> Solution:
-        """函数名：solve；参数：arterial 等；返回值：Solution；异常：无。"""
-        down_global_output = self.mode == "global"
-        solver = FullFlexiblePhaseTuneSolver(
-            config=self.config,
-            max_loops=self.max_loops,
-            up_global_output=True,
-            down_global_output=down_global_output,
-        )
-        return solver.solve(
-            arterial,
-            prior=prior,
-            loss_builder=loss_builder,
-            constraint_builder=constraint_builder,
-            alignment_builder=alignment_builder,
-            max_loss=max_loss,
-            max_intersection_loss=max_intersection_loss,
-            band_loss_weight=band_loss_weight,
-            objective=objective,
-            tunable_intersections=tunable_intersections,
-        )
-
-
-class PhaseTuneSolver(Solver):
-    """薄包装器：构造 ObjectiveConfig，然后交给 FlexiblePhaseTuneSolver。"""
-
-    name = "phase-tune"
-
-    def __init__(
-        self,
-        mode: str = "global",
-        down_weight: float = 1.0,
-        up_weight: float = 1.0,
-        window_weights: dict[int, float] | None = None,
-        max_loops: int = 3,
-        objective_mode: str = "sum",
-        balance_eps: float = 0.1,
-        balance_terms: tuple[str, ...] = ("up", "down"),
-        tunable_intersections: set[str] | None = None,
-        objective_config: ObjectiveConfig | None = None,
-        normalize_window_weights: bool = True,
-    ) -> None:
-        """函数名：__init__；参数：mode、权重与目标配置；返回值：无；异常：无。"""
-        self.mode = mode
-        self.down_weight = down_weight
-        self.up_weight = up_weight
-        self.window_weights = window_weights
-        self.max_loops = max_loops
-        self.objective_mode = objective_mode
-        self.balance_eps = balance_eps
-        self.balance_terms = tuple(balance_terms)
-        self.tunable_intersections = tunable_intersections
-        self.normalize_window_weights = normalize_window_weights
-        self.objective_config = objective_config
-
-    def _build_config(self, arterial: Arterial) -> ObjectiveConfig:
-        """函数名：_build_config；参数：arterial；返回值：ObjectiveConfig；异常：ValueError。"""
-        if self.objective_config is not None:
-            return self.objective_config
-        if self.mode == "global":
-            return composite_config(
-                up_weight=self.up_weight,
-                down_weight=self.down_weight,
-                objective_mode=self.objective_mode,
-                balance_eps=self.balance_eps,
-                balance_terms=self.balance_terms,
-            )
-        if self.mode == "oneway":
-            return oneway_config(
-                up_weight=self.up_weight,
-                window_weights=self.window_weights,
-                n_intersections=len(arterial.intersection_order),
-                normalize_window_weights=self.normalize_window_weights,
-            )
-        raise ValueError(f"unknown mode: {self.mode}")
-
-    def solve(
-        self,
-        arterial: Arterial,
-        prior: Solution | None = None,
-        loss_builder=None,
-        constraint_builder=None,
-        alignment_builder=None,
-        max_loss: float | None = None,
-        max_intersection_loss: float | None = None,
-        band_loss_weight: float = 0.0,
-        objective: str = "bandwidth",
-    ) -> Solution:
-        """函数名：solve；参数：arterial 等；返回值：Solution；异常：无。"""
-        config = self._build_config(arterial)
-        solver = FlexiblePhaseTuneSolver(
-            config=config,
-            mode=self.mode,
-            down_weight=self.down_weight,
-            up_weight=self.up_weight,
-            window_weights=self.window_weights,
-            max_loops=self.max_loops,
-        )
-        return solver.solve(
-            arterial,
-            prior=prior,
-            loss_builder=loss_builder,
-            constraint_builder=constraint_builder,
-            alignment_builder=alignment_builder,
-            max_loss=max_loss,
-            max_intersection_loss=max_intersection_loss,
-            band_loss_weight=band_loss_weight,
-            objective=objective,
-            tunable_intersections=self.tunable_intersections,
-        )

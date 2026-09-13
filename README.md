@@ -75,7 +75,10 @@ from artery_milp.models import (
 )
 
 # 目标 DSL
-from artery_milp.solvers.core import ObjectiveConfig, SumGroup, BalanceGroup
+from artery_milp.solvers.core import (
+    ObjectiveConfig, SumGroup, BalanceGroup,
+    build_objective_config, composite_config, oneway_config,
+)
 
 # 输入校验错误
 from artery_milp.solvers import TermValidationError
@@ -84,7 +87,7 @@ from artery_milp.solvers import TermValidationError
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 
 # 第二阶段
-from artery_milp.solvers.stage2 import FullFlexiblePhaseTuneSolver, PhaseTuneSolver
+from artery_milp.solvers.stage2 import FullFlexiblePhaseTuneSolver
 
 # 两阶段编排 + 配置
 from artery_milp.solvers.pipeline import (
@@ -1009,8 +1012,6 @@ solver = SegmentedBandSolver(
     config=objective,       # ObjectiveConfig
     max_segments=3,         # 最多建模到第几段
     max_loops=3,            # 整数圈数范围 [-max_loops, max_loops]
-    up_style="global",      # 输出口径提示
-    down_style="global",
     up_global_output=False,
     down_global_output=False,
 )
@@ -1031,20 +1032,23 @@ solution = solver.solve(
 - 目标由 `ObjectiveConfig` 决定；
 - 可选对齐损失 `AlignmentLossBuilder`。
 
-兼容旧入口：
+`SegmentedBandSolver` 现在必须显式传入 `ObjectiveConfig`。如果只是想在旧的“权重”形式上快速构造目标，可以用：
 
 ```python
-from artery_milp.solvers.stage1 import SegmentedBandObjective, SegmentedBandSolver
+from artery_milp.solvers.core import build_objective_config
+from artery_milp.solvers.stage1 import SegmentedBandSolver
 
-solver = SegmentedBandSolver(
-    objective=SegmentedBandObjective(
-        up_weight=1.0,
-        down_weight=1.0,
-        mode="balanced_composite",   # sum / balanced / balanced_composite
-        balance_eps=0.20,
-    )
+config = build_objective_config(
+    mode="global",
+    up_weight=1.0,
+    down_weight=1.0,
+    objective_mode="balanced_composite",  # sum / balanced / balanced_composite
+    balance_eps=0.20,
 )
+solver = SegmentedBandSolver(config=config)
 ```
+
+注意：旧的 `SegmentedBandObjective` 已移除；`build_objective_config` 只负责把 mode/权重翻译成 `ObjectiveConfig`，不参与求解。
 
 ### 5.2 Stage 2：`FullFlexiblePhaseTuneSolver`
 
@@ -1079,7 +1083,7 @@ solution = tuner.solve(
 
 - `prior.plan_choices` 决定每个路口使用哪个方案；
 - `term_bounds` 决定哪些端点可调、范围多少；不在其中的端点固定；
-- `FullFlexiblePhaseTuneSolver` 本身不再接收 `mode`；`mode` 只保留在 `PhaseTuneSolver` / `TwoStageConfig.band.mode` 等上层入口，用于选择预设目标和输出口径；
+- `FullFlexiblePhaseTuneSolver` 本身不再接收 `mode`；`mode` 只保留在 `TwoStageConfig.band.mode` 等上层配置，用于选择预设目标和输出口径；
 - `AlignmentLossBuilder` 始终只做上下行全局带对齐，不受任何 `mode` 影响；
 - `up_global_output` / `down_global_output` 控制输出口径；
 - `tunable_intersections` 可以进一步限制哪些路口允许调；
@@ -1087,14 +1091,20 @@ solution = tuner.solve(
 - `objective="loss"` 主优化交叉口损失（用于 ε-约束扫描）；
 - `max_intersection_loss` 可以给交叉口损失加上界。
 
-包装入口：
+如果你只有 mode/权重而没有现成的 `ObjectiveConfig`，可以先在外部构造：
 
 ```python
-from artery_milp.solvers.stage2 import FlexiblePhaseTuneSolver, PhaseTuneSolver
+from artery_milp.solvers.core import build_objective_config
+
+objective = build_objective_config(
+    mode="global",          # global / oneway
+    up_weight=1.0,
+    down_weight=1.0,
+    objective_mode="sum",
+)
 ```
 
-- `FlexiblePhaseTuneSolver(config, mode, ...)`：直接接收 `ObjectiveConfig`；
-- `PhaseTuneSolver(mode, weights, objective_config=...)`：薄包装，负责构造 `ObjectiveConfig`。
+然后把 `objective` 传给 `FullFlexiblePhaseTuneSolver`。
 
 ### 5.3 两阶段编排：`TwoStageSolver`
 
@@ -1169,7 +1179,7 @@ knee = runner.knee_point()
 | 目标 | 入口 |
 | :--- | :--- |
 | 只做 Stage 1 | `SegmentedBandSolver` |
-| 只做 Stage 2（已有 prior） | `FullFlexiblePhaseTuneSolver` / `PhaseTuneSolver` |
+| 只做 Stage 2（已有 prior） | `FullFlexiblePhaseTuneSolver` |
 | 完整两阶段 | `TwoStageSolver(config=TwoStageConfig(...))` |
 | 带宽-损失 Pareto | `EpsilonConstraintRunner` |
 
@@ -1518,13 +1528,14 @@ SignalPlan(
 )
 ```
 
-**模板 2：Phase 1 目标**
+**模板 2：Stage 1 目标（权重形式）**
 
 ```python
-SegmentedBandObjective(
+build_objective_config(
+    mode="global",
     up_weight=1.0,
     down_weight=1.0,
-    mode="balanced_composite",
+    objective_mode="balanced_composite",
     balance_eps=0.20,
 )
 ```
@@ -1613,7 +1624,9 @@ Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个
 
 ## 附录 C：当前边界与开发约定
 
-- `composite_config` / `oneway_config` 现位于 `solvers/core/objective.py`，`solvers.stage1` 仍做兼容转发；
+- `composite_config` / `oneway_config` / `build_objective_config` 位于 `solvers/core/objective.py`；
+- Stage 2 只保留 `FullFlexiblePhaseTuneSolver`，不再有 `FlexiblePhaseTuneSolver` / `PhaseTuneSolver` 包装层；
+- Stage 1 只保留 `SegmentedBandSolver`，必须显式传入 `ObjectiveConfig`，旧的 `SegmentedBandObjective` 已移除；
 - 统一 term 校验当前覆盖 `ConstraintBuilder` / `SegmentLossBuilder` / `AlignmentLossBuilder` 生成的 `LinearSpec`；`SignalPlan` 内部的 `SignalConstraint` / `SignalLoss` 在模型构造期校验；
 - `ObjectiveConfig` 里的 band key（如 `up.seg5`）目前由 `parse_band_key` 解析，但尚未做完整的段号边界校验，非法段号可能在后续建模阶段报错；
 - 仓库里可能残留 Windows 的 `*:Zone.Identifier` 文件，可安全删除。

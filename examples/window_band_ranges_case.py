@@ -186,7 +186,6 @@ def main() -> None:
         config=build_objective(),
         up_global_output=True,
         down_global_output=False,
-        down_style="local",
     )
     solution = solver.solve(
         arterial,
