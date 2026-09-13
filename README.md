@@ -235,7 +235,7 @@ term 两类写法：
 | 场景 | 写法 | 例子 |
 | :--- | :--- | :--- |
 | `SignalConstraint` / `SignalLoss`（路口内部） | 局部写法 | `up.1.start`、`down.2.end` |
-| `LinearSpec` / `SegmentLossSpec`（跨路口/外部） | 完整写法 | `I1.up.1.start`、`I3.down.2.end` |
+| `LinearSpec` / `SegmentLossSpec`（跨路口/外部，不推荐直接使用） | 完整写法 | `I1.up.1.start`、`I3.down.2.end` |
 
 局部写法只在 `SignalPlan` 内部有意义；跨路口的构建器必须写全路口名。
 
@@ -510,7 +510,7 @@ i2 = Intersection("I2", [
 | :--- | :--- | :--- |
 | 单个路口内部的段顺序、最小间隔 | `SignalConstraint` | `SignalPlan.signal_constraints` |
 | 单个路口内部的期望区间/软目标 | `SignalLoss` | `SignalPlan.signal_losses` |
-| 跨路口协调、带宽层规则、临时实验规则 | `LinearSpec` / `SegmentLossSpec` | `ConstraintBuilder` / `SegmentLossBuilder` |
+| 跨路口协调、带宽层规则、临时实验规则 | `LinearSpec` / `SegmentLossSpec`（不推荐直接使用，仅高级/内部实验） | `ConstraintBuilder` / `SegmentLossBuilder` |
 
 **不要把单个路口内部的规则外置成 `LinearSpec`。** 原因：
 
@@ -519,7 +519,7 @@ i2 = Intersection("I2", [
 3. 外部 term 如果引用了某个候选方案不存在的端点，Stage 1 会在统一校验阶段直接报错；
 4. Stage 1 本身不建模 `SignalConstraint` / `SignalLoss`，它们的实际效果发生在 Stage 2；把路口内部规则放在方案里语义最清晰。
 
-跨路口的 `LinearSpec` / `SegmentLossSpec` 用法见第 3.6 节。
+**当前版本不推荐用户直接使用 `LinearSpec` / `SegmentLossSpec`。** 如果确实需要跨路口扩展，只建议使用完整路口端点 term，例如 `I1.up.1.start`；不要使用 `b_up`、`tU_I2` 等特殊变量。跨路口的 `LinearSpec` / `SegmentLossSpec` 用法见第 3.6 节。
 
 ---
 
@@ -708,9 +708,15 @@ margin = BandMarginConfig(
 | Stage 1 | 生效（缩小每个候选方案的窗口） | 不生效 |
 | Stage 2 | 生效（作用于调参后的端点） | 生效（产生 band_loss） |
 
-### 3.6 高级：外部约束与软损失
+### 3.6 高级：外部约束与软损失（不推荐直接使用）
 
-以下工具适合跨路口、带宽层、临时策略，**不建议**用来描述单个路口内部关系。
+> **当前版本不推荐用户直接使用 `LinearSpec` / `SegmentLossSpec`。**
+> 优先使用 `ObjectiveConfig` 描述带层目标，优先使用 `SignalConstraint` / `SignalLoss` 描述路口内部规则。
+>
+> 如果确实必须使用外部构建器，只建议使用完整的 `{Int}.{dir}.{idx}.{start|end}` term，例如 `I1.up.1.start`。
+> `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 等特殊变量已经停用，解析逻辑在 Stage 1 / Stage 2 中只保留注释，写入会报错，避免静默丢约束。
+
+以下工具只适合跨路口、带宽层、临时策略，**不建议**用来描述单个路口内部关系。
 
 #### `LinearSpec` + `ConstraintBuilder`
 
@@ -752,7 +758,8 @@ soft = SegmentLossBuilder([
 
 - `lower_threshold / upper_threshold` 是周期比例；
 - `kind="band"` 的损失记入 `band_loss`，`kind="intersection"` 记入 `intersection_loss`；
-- 支持完整 term 和特殊变量 `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal`。
+- 当前只推荐使用完整 term `{Int}.{dir}.{idx}.{start|end}`；
+- `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 等特殊变量已停用，不建议再写，写入会报错。
 
 #### `plan_tags` 条件约束
 
@@ -821,10 +828,7 @@ from artery_milp.solvers.builders import (
 | `idx` | 从 1 开始，且对应段必须存在 |
 | Stage 1 端点可用性 | 必须被该路口的**所有候选方案**共同定义 |
 | Stage 2 端点可用性 | 必须被**选中方案**定义 |
-| `b_up` / `b_down` | 对应方向必须有全走廊带实例 |
-| `tU_I2` / `tD_I2` | 路口必须存在，且对应方向有带实例 |
-| `bU_S12` / `bD_S12` | 物理路段必须存在，且对应方向有带实例 |
-| `B_bal` | 必须至少有一个 `BalanceGroup` |
+| 特殊变量 | `b_up`、`b_down`、`tU_I2`、`tD_I2`、`bU_S12`、`bD_S12`、`B_bal` 已停用；不建议外部写入，求解器遇到会主动报错 |
 | `plan_tags` | 引用的路口和方案名必须存在 |
 | 部分解析 | 不允许；任一 term 非法，整条 spec 拒绝 |
 
@@ -1457,10 +1461,10 @@ SegmentLossBuilder([
 | `down.2.start` / `down.2.end` | 当前路口下行第 2 段起止 | `SignalConstraint` / `SignalLoss` |
 | `I2.up.1.start` | `I2` 上行第 1 段起点 | `LinearSpec` / `SegmentLossSpec` |
 | `I3.down.2.end` | `I3` 下行第 2 段终点 | `LinearSpec` / `SegmentLossSpec` |
-| `b_up` / `b_down` | 上/下行全走廊带宽 | 目标/高级约束/损失 |
-| `tU_I2` / `tD_I2` | 上/下行带前沿到达 `I2` 的时刻 | 高级约束/损失 |
-| `bU_S12` / `bD_S12` | 上/下行在物理路段 `S12` 上的带宽 | 高级约束/损失 |
-| `B_bal` | 首个 `BalanceGroup` 的组内最小值变量 | 高级约束/损失 |
+| `b_up` / `b_down` | 旧特殊变量：上/下行全走廊带宽聚合 | 已停用 |
+| `tU_I2` / `tD_I2` | 旧特殊变量：上/下行第一条带到达 `I2` 的时刻 | 已停用 |
+| `bU_S12` / `bD_S12` | 旧特殊变量：上/下行在物理路段 `S12` 上的带宽聚合 | 已停用 |
+| `B_bal` | 旧特殊变量：首个 `BalanceGroup` 的组内最小值 | 已停用 |
 
 ## 附录 B：常见问题
 

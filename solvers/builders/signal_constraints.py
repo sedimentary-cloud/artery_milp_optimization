@@ -64,10 +64,11 @@ class SegmentLossSpec:
     的期望区间请优先使用 ``SignalPlan.signal_losses`` 里的
     ``SignalLoss``。
 
-    terms 支持：
+    terms 当前建议只使用：
     - `I2.up.1.start` / `I3.down.2.end`
-    - `tU_I2` / `tD_I4`
-    - `b_up` / `b_down` / `bD_seg2` / `B_bal`
+
+    旧特殊变量 `tU_*` / `tD_*` / `b_up` / `b_down` / `bD_*` / `B_bal`
+    已停用，不建议再使用。
 
     损失形式：
     - 下侧：`lower_slope * max(0, lower_threshold - expr)`
@@ -145,12 +146,12 @@ class SegmentLossBuilder:
 class LinearSpec:
     """线性约束声明（跨路口 / 全局 / 临时策略的高级扩展工具）。
 
-    terms 支持：
+    terms 当前建议只使用：
     - `I2.up.1.start`
     - `I3.down.2.end`
-    - `tU_I2` / `tD_I2`
-    - `b_up` / `b_down` / `B_bal`
-    - `bD_seg1`
+
+    旧特殊变量 `tU_*` / `tD_*` / `b_up` / `b_down` / `bD_*` / `B_bal`
+    已停用，不建议再使用。
 
     外部声明约定：
     - `rhs` 使用“占周期比例”；

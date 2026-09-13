@@ -320,38 +320,58 @@ class FullFlexiblePhaseTuneSolver(Solver):
             return vars_out
 
         def resolve_special_terms(name: str, coef: float) -> list[tuple[int, float]]:
-            if name == "b_up":
-                return [(global_idx[("up", band_no)], coef) for band_no in active_by_direction["up"]]
-            if name == "b_down":
-                return [(global_idx[("down", band_no)], coef) for band_no in active_by_direction["down"]]
-            if name == "B_bal":
-                gvar = balance_vars.get(0)
-                return [] if gvar is None else [(gvar, coef)]
-            if name.startswith("tU_"):
-                i = name_to_i.get(name[3:])
-                if i is None or not active_by_direction["up"]:
-                    return []
-                first_band = active_by_direction["up"][0]
-                return [(t_idx[("up", first_band)][i], coef)]
-            if name.startswith("tD_"):
-                i = name_to_i.get(name[3:])
-                if i is None or not active_by_direction["down"]:
-                    return []
-                first_band = active_by_direction["down"][0]
-                return [(t_idx[("down", first_band)][i], coef)]
-            if name.startswith("bD_"):
-                seg_idx = seg_name_to_idx.get(name[3:])
-                if seg_idx is None:
-                    return []
-                return [(width_idx[("down", band_no)][seg_idx], coef)
-                        for band_no in active_by_direction["down"]]
-            if name.startswith("bU_"):
-                seg_idx = seg_name_to_idx.get(name[3:])
-                if seg_idx is None:
-                    return []
-                return [(width_idx[("up", band_no)][seg_idx], coef)
-                        for band_no in active_by_direction["up"]]
+            """解析特殊变量名。
+
+            这些特殊变量（b_up / b_down / B_bal / tU_* / tD_* / bU_* /
+            bD_*）属于旧的 LinearSpec / SegmentLossSpec 高级接口。当前版本
+            不推荐用户直接使用外部构建器，因此下面的解析逻辑只保留注释，
+            不再启用；正常求解流程不会使用这些名字。
+
+            如果外部 spec 仍然写这些名字，这里会主动报错，避免静默丢约束。
+            """
+            # if name == "b_up":
+            #     return [(global_idx[("up", band_no)], coef) for band_no in active_by_direction["up"]]
+            # if name == "b_down":
+            #     return [(global_idx[("down", band_no)], coef) for band_no in active_by_direction["down"]]
+            # if name == "B_bal":
+            #     gvar = balance_vars.get(0)
+            #     return [] if gvar is None else [(gvar, coef)]
+            # if name.startswith("tU_"):
+            #     i = name_to_i.get(name[3:])
+            #     if i is None or not active_by_direction["up"]:
+            #         return []
+            #     first_band = active_by_direction["up"][0]
+            #     return [(t_idx[("up", first_band)][i], coef)]
+            # if name.startswith("tD_"):
+            #     i = name_to_i.get(name[3:])
+            #     if i is None or not active_by_direction["down"]:
+            #         return []
+            #     first_band = active_by_direction["down"][0]
+            #     return [(t_idx[("down", first_band)][i], coef)]
+            # if name.startswith("bD_"):
+            #     seg_idx = seg_name_to_idx.get(name[3:])
+            #     if seg_idx is None:
+            #         return []
+            #     return [(width_idx[("down", band_no)][seg_idx], coef)
+            #             for band_no in active_by_direction["down"]]
+            # if name.startswith("bU_"):
+            #     seg_idx = seg_name_to_idx.get(name[3:])
+            #     if seg_idx is None:
+            #         return []
+            #     return [(width_idx[("up", band_no)][seg_idx], coef)
+            #             for band_no in active_by_direction["up"]]
+
+            if (
+                name in ("b_up", "b_down", "B_bal")
+                or name.startswith(("tU_", "tD_", "bD_", "bU_"))
+            ):
+                raise ValueError(
+                    f"特殊变量 {name!r} 已停用；"
+                    "请改用 ObjectiveConfig 表达带层目标，"
+                    "或使用 SignalConstraint / SignalLoss 表达路口规则。"
+                )
             return []
+
 
         def resolve_term_terms(name: str, coef: float) -> list[tuple[int, float]]:
             parts = name.split(".")

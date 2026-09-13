@@ -317,35 +317,54 @@ class SegmentedBandSolver(Solver):
         # 特殊变量名 b_up、b_down、B_bal、tU_I2、bD_S12 等，
         # 也要翻译成实际的 MILP 变量下标。
         def resolve_band_loss_name(name: str) -> list[int]:
-            """把特殊损失/约束变量名翻译成变量下标列表。"""
-            if name == "b_up":
-                return [global_idx[("up", band_no)] for band_no in active_by_direction["up"]]
-            if name == "b_down":
-                return [global_idx[("down", band_no)] for band_no in active_by_direction["down"]]
-            if name == "B_bal":
-                gvar = balance_vars.get(0)
-                return [] if gvar is None else [gvar]
-            if name.startswith("tU_"):
-                i = name_to_i.get(name[3:])
-                if i is None or not active_by_direction["up"]:
-                    return []
-                return [t_idx[("up", active_by_direction["up"][0])][i]]
-            if name.startswith("tD_"):
-                i = name_to_i.get(name[3:])
-                if i is None or not active_by_direction["down"]:
-                    return []
-                return [t_idx[("down", active_by_direction["down"][0])][i]]
-            if name.startswith("bD_"):
-                seg_idx = seg_name_to_idx.get(name[3:])
-                if seg_idx is None:
-                    return []
-                return [width_idx[("down", band_no)][seg_idx] for band_no in active_by_direction["down"]]
-            if name.startswith("bU_"):
-                seg_idx = seg_name_to_idx.get(name[3:])
-                if seg_idx is None:
-                    return []
-                return [width_idx[("up", band_no)][seg_idx] for band_no in active_by_direction["up"]]
+            """把特殊损失/约束变量名翻译成变量下标列表。
+
+            注意：下面这些特殊变量（b_up / b_down / B_bal / tU_* / tD_* /
+            bU_* / bD_*）曾经用于 LinearSpec / SegmentLossSpec 的高级接口。
+            当前版本不推荐用户直接使用这些外部构建器，因此解析逻辑只保留
+            注释，不再启用；正常求解流程不会使用这些名字。
+
+            如果外部 spec 仍然写这些名字，这里会主动报错，避免静默丢约束。
+            """
+            # if name == "b_up":
+            #     return [global_idx[("up", band_no)] for band_no in active_by_direction["up"]]
+            # if name == "b_down":
+            #     return [global_idx[("down", band_no)] for band_no in active_by_direction["down"]]
+            # if name == "B_bal":
+            #     gvar = balance_vars.get(0)
+            #     return [] if gvar is None else [gvar]
+            # if name.startswith("tU_"):
+            #     i = name_to_i.get(name[3:])
+            #     if i is None or not active_by_direction["up"]:
+            #         return []
+            #     return [t_idx[("up", active_by_direction["up"][0])][i]]
+            # if name.startswith("tD_"):
+            #     i = name_to_i.get(name[3:])
+            #     if i is None or not active_by_direction["down"]:
+            #         return []
+            #     return [t_idx[("down", active_by_direction["down"][0])][i]]
+            # if name.startswith("bD_"):
+            #     seg_idx = seg_name_to_idx.get(name[3:])
+            #     if seg_idx is None:
+            #         return []
+            #     return [width_idx[("down", band_no)][seg_idx] for band_no in active_by_direction["down"]]
+            # if name.startswith("bU_"):
+            #     seg_idx = seg_name_to_idx.get(name[3:])
+            #     if seg_idx is None:
+            #         return []
+            #     return [width_idx[("up", band_no)][seg_idx] for band_no in active_by_direction["up"]]
+
+            if (
+                name in ("b_up", "b_down", "B_bal")
+                or name.startswith(("tU_", "tD_", "bD_", "bU_"))
+            ):
+                raise ValueError(
+                    f"特殊变量 {name!r} 已停用；"
+                    "请改用 ObjectiveConfig 表达带层目标，"
+                    "或使用 SignalConstraint / SignalLoss 表达路口规则。"
+                )
             return []
+
 
         # ============================================================
         # 4. 把外部的业务约束/软损失收集起来

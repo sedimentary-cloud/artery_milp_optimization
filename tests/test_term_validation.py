@@ -195,6 +195,19 @@ class SolverValidationIntegrationTests(unittest.TestCase):
                 ]),
             )
 
+    def test_solver_rejects_deprecated_special_terms(self):
+        for term in ("b_up", "tU_I2"):
+            with self.subTest(term=term):
+                with self.assertRaises(ValueError) as ctx:
+                    SegmentedBandSolver(config=OBJECTIVE).solve(
+                        one_plan_arterial(),
+                        constraint_builder=ConstraintBuilder([
+                            LinearSpec(terms={term: 1.0}, sense=">=", rhs=0.0)
+                        ]),
+                    )
+                self.assertIn("已停用", str(ctx.exception))
+
+
 
 if __name__ == "__main__":
     unittest.main()
