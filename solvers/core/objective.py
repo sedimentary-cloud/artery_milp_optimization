@@ -141,14 +141,6 @@ class SumGroup:
     """
     terms: dict[str, float] = field(default_factory=dict)
 
-    def parsed_terms(self):
-        """返回 {BandKey: weight}，便于求解器直接使用。"""
-        out = {}
-        for key, w in self.terms.items():
-            band = parse_band_key(key)
-            out[band] = w
-        return out
-
 
 @dataclass
 class BalanceGroup:

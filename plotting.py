@@ -27,8 +27,6 @@ GLOBAL_DOWN_COLOR = "#3077e2"
 
 WINDOW_BAND_ALPHA = 0.10
 WINDOW_BAND_ZORDER = 3.4
-# 兼容旧名字：没有方向信息的窗口 key 默认按下行处理。
-WINDOW_BAND_COLOR = GLOBAL_DOWN_COLOR
 WINDOW_UP_COLOR = GLOBAL_UP_COLOR
 WINDOW_DOWN_COLOR = GLOBAL_DOWN_COLOR
 # 主绿波带使用斑点纹理，避免只靠颜色区分。
@@ -638,34 +636,6 @@ def _poly_band(pos: list[float], t: list[float], b: float, **kw) -> Polygon:
              + list(zip([v + b for v in t[::-1]], pos[::-1])))
     kw.setdefault("edgecolor", "none")
     return Polygon(verts, closed=True, **kw)
-
-
-def _parse_window_key(key: str, names: list[str]) -> tuple[str | None, int | None, int | None]:
-    """解析窗口带 key。
-
-    新格式：
-        "up.win3@I1-I3"   -> ("up", 3, 0)
-        "down.win2@I1-I2" -> ("down", 2, 0)
-
-    兼容旧格式：
-        "win3@I1-I3"      -> ("down", 3, 0)
-
-    解析失败返回 (None, None, None)。
-    """
-    try:
-        prefix, rng = key.split("@")
-        # 新格式带方向前缀；旧格式没有方向，默认按下行处理。
-        if "." in prefix:
-            direction, k_str = prefix.split(".", 1)
-        else:
-            direction, k_str = "down", prefix
-        if direction not in ("up", "down"):
-            return None, None, None
-        k = int(k_str.replace("win", ""))
-        first = rng.split("-")[0]
-        return direction, k, names.index(first)
-    except (ValueError, IndexError):
-        return None, None, None
 
 
 def _global_window_key(direction: str, names: list[str]) -> str:

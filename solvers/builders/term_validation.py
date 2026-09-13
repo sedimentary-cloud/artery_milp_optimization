@@ -72,11 +72,6 @@ class EndpointRef:
         """例如 ``up.1.start``。"""
         return f"{self.direction}.{self.segment_no}.{self.endpoint}"
 
-    @property
-    def full_name(self) -> str:
-        """例如 ``I1.up.1.start``。"""
-        return f"{self.intersection}.{self.local_name}"
-
 
 @dataclass(frozen=True)
 class SpecialRef:

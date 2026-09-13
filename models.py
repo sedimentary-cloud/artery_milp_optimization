@@ -225,15 +225,6 @@ class SignalPlan:
         """函数名：down_windows；参数：无；返回值：下行区间列表；异常：无。"""
         return self.down_segments
 
-    def up_green_ratio(self) -> float:
-        """函数名：up_green_ratio；参数：无；返回值：上行总绿信比；异常：无。"""
-        return sum(w.width for w in self.up_segments)
-
-    def down_green_ratio(self) -> float:
-        """函数名：down_green_ratio；参数：无；返回值：下行总绿信比；异常：无。"""
-        return sum(w.width for w in self.down_segments)
-
-
 # ---------------------------------------------------------------------------
 # 路口
 # ---------------------------------------------------------------------------
@@ -325,7 +316,3 @@ class Arterial:
     @property
     def n_intersections(self) -> int:
         return len(self.intersection_order)
-
-    @property
-    def n_segments(self) -> int:
-        return len(self.segment_order)

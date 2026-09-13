@@ -27,30 +27,6 @@ class BandMarginConfig:
     penalty_up: float = 1.0
     penalty_down: float = 1.0
 
-    def hard_margin(self, direction: str) -> float:
-        """返回指定方向的硬边距（周期比例）。"""
-        if direction == "up":
-            return self.hard_margin_up
-        if direction == "down":
-            return self.hard_margin_down
-        raise ValueError(f"unknown direction: {direction}")
-
-    def soft_margin(self, direction: str) -> float:
-        """返回指定方向的软边距（周期比例）。"""
-        if direction == "up":
-            return self.soft_margin_up
-        if direction == "down":
-            return self.soft_margin_down
-        raise ValueError(f"unknown direction: {direction}")
-
-    def penalty(self, direction: str) -> float:
-        """返回指定方向软边距损失的惩罚系数。"""
-        if direction == "up":
-            return self.penalty_up
-        if direction == "down":
-            return self.penalty_down
-        raise ValueError(f"unknown direction: {direction}")
-
     @property
     def has_soft_margin(self) -> bool:
         """是否存在需要建模的软边距。"""

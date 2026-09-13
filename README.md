@@ -502,7 +502,7 @@ i2 = Intersection("I2", [
 - Stage 1：通过二元变量自动选择方案；
 - Stage 2：沿用 Stage 1 选中的方案，只调该方案的段端点。
 
-注意：Stage 1 只对“所有候选方案共同拥有”的段号建模。例如上一个路口 `base` 只有 1 段、`split` 有 2 段，那么 Stage 1 只会对第 1 段做多段传播；第 2 段的约束/损失要到 Stage 2 选中 `split` 后才生效。
+注意：Stage 1 按固定 band 数量建模，每个 band 在每个路口自由选择候选方案中的绿灯窗口；不再要求各候选方案拥有相同段号。窗口数不一致时，band 只需要选择实际存在的窗口。
 
 ### 2.6 选型建议：路口内部 vs 跨路口
 
@@ -869,7 +869,7 @@ cd /home/qktx/artery_milp
 Stage 1 做两件事：
 
 1. 在路口多个候选方案中选择一个方案；
-2. 在固定绿灯窗口下，优化各方向、各段号的绿波带宽度和传播轨迹。
+2. 在固定绿灯窗口下，为每个 band 自由选择各路口窗口，优化各方向 band 的带宽和传播轨迹。
 
 ```python
 from artery_milp.solvers.stage1 import SegmentedBandSolver
@@ -881,8 +881,9 @@ margin = BandMarginConfig(
 
 solver = SegmentedBandSolver(
     config=objective,       # ObjectiveConfig
-    max_segments=3,         # 最多建模到第几段
-    max_loops=3,            # 整数圈数范围 [-max_loops, max_loops]
+    max_segments=3,         # 每个方向最多建模多少个 band（旧参数名保留）
+    band_gap=0.0,           # 同方向相邻 band 的最小间隔（秒）
+    max_loops=3,            # 整数圈数的手动下限；长路段会自动放大
     up_global_output=False,
     down_global_output=False,
     margin=margin,          # Stage 1 只用硬边距
@@ -898,8 +899,9 @@ solution = solver.solve(
 建模要点：
 
 - 对每个路口候选方案引入二元变量，每组恰好选 1 个；
-- 对每个“方向-段号”实例建立传播时刻 `t`、整数圈数 `m`、逐路段带宽 `width`、全走廊带宽 `global`；
-- 只对“所有候选方案共同拥有”的段号建模；
+- 对每个“方向-band”实例建立传播时刻 `t`、整数圈数 `m`、逐路段带宽 `width`、全走廊带宽 `global`；
+- band 在每个路口通过二值变量自由选择候选方案中的绿灯窗口；
+- 同方向多条 band 通过顺序约束保持不重叠，避免复制解刷爆目标；
 - 目标由 `ObjectiveConfig` 决定；
 - 可选 `BandMarginConfig`：Stage 1 只使用 `hard_margin_*`，把每个候选方案的窗口向内缩；
 
@@ -1018,7 +1020,32 @@ TwoStageSolver
        失败 -> 返回 s1，status 追加 "|stage1_fallback"
 ```
 
-### 5.4 Pareto 扫描：`EpsilonConstraintRunner`
+### 5.4 迭代两阶段：`IterativeTwoStageSolver`
+
+`IterativeTwoStageSolver` 会反复执行：
+
+```text
+Stage 1 选窗口 -> Stage 2 调端点 -> 把调后的窗口写回 Stage 1 -> 再跑 Stage 1 ...
+```
+
+收敛判据只检查窗口分配：
+
+- 连续两轮窗口分配相同 -> 返回最新解，`status` 追加 `|iterative_converged`；
+- 窗口分配进入循环，例如 A -> B -> A -> B -> ... -> 返回循环中第一个解，`status` 追加 `|iterative_cycle`；
+- 达到 `max_iterations` 仍未收敛 -> 返回最后解，`status` 追加 `|iterative_max_iter`；
+- 每轮 Stage 2 必须成功，否则抛出 `RuntimeError`。
+
+```python
+from artery_milp.solvers.pipeline import IterativeTwoStageSolver
+
+solver = IterativeTwoStageSolver(config=config, max_iterations=10)
+solution = solver.solve(arterial)
+
+for idx, item in enumerate(solver.history, start=1):
+    print(idx, item.band_score, item.plan_choices)
+```
+
+### 5.5 Pareto 扫描：`EpsilonConstraintRunner`
 
 用于扫描“交叉口损失 vs 绿波带目标”的前沿。
 
@@ -1044,13 +1071,14 @@ knee = runner.knee_point()
 
 可用 `plotting.plot_pareto_frontier(frontier, knee_point=knee)` 绘图。
 
-### 5.5 solver 入口速查
+### 5.6 solver 入口速查
 
 | 目标 | 入口 |
 | :--- | :--- |
 | 只做 Stage 1 | `SegmentedBandSolver` |
 | 只做 Stage 2（已有 prior） | `FullFlexiblePhaseTuneSolver` |
 | 完整两阶段 | `TwoStageSolver(config=TwoStageConfig(...))` |
+| 迭代两阶段到稳定 | `IterativeTwoStageSolver(config=TwoStageConfig(...), max_iterations=10)` |
 | 带宽-损失 Pareto | `EpsilonConstraintRunner` |
 
 ---
@@ -1107,10 +1135,10 @@ class Solution:
 | :--- | :--- |
 | `bandwidth_up` / `bandwidth_down` | 兼容口径摘要：`物理路段名 -> 带宽秒`。全局口径下各路段同值；local 口径下逐路段不同 |
 | `band_start_up` / `band_start_down` | 聚合带在各路口的到达时刻（秒，`mod cycle`） |
-| `multi_bandwidths` | `方向 -> 段号 -> 全走廊带宽秒`，多段模型最原始结果 |
-| `multi_band_starts` | `方向 -> 段号 -> 路口 -> 到达时刻秒`，适合解包轨迹/画图 |
-| `multi_window_bands` | `方向 -> 段号 -> 窗口 key -> 带宽秒`，每个段号对应的独立局部最优带 |
-| `window_bands` | `窗口 key -> 带宽秒`，跨段号聚合后的局部窗口带 |
+| `multi_bandwidths` | `方向 -> band 编号 -> 全走廊带宽秒`，多带模型最原始结果 |
+| `multi_band_starts` | `方向 -> band 编号 -> 路口 -> 到达时刻秒`，适合解包轨迹/画图 |
+| `multi_window_bands` | `方向 -> band 编号 -> 窗口 key -> 带宽秒`，每个 band 对应的局部窗口带 |
+| `window_bands` | `窗口 key -> 带宽秒`，跨 band 聚合后的局部窗口带 |
 | `window_band_ranges` | `窗口 key -> [实例...]`，每个实例有显式时间范围，最适合导出和绘图 |
 
 `window_band_ranges` 的实例结构：
@@ -1441,17 +1469,21 @@ SegmentLossBuilder([
 逐项检查：
 
 - 是不是写成了局部 term `up.1.start`，但 `LinearSpec` 需要完整 `I1.up.1.start`；
-- 该段号是否在某些候选方案中不存在（Stage 1 要求所有候选方案都有）；
+- 该段号（方案窗口端点）是否在某些候选方案中不存在（当前 Stage 1 对方案端点 term 仍按所有候选方案的共同端点校验）；
 - 该端点是否在 Stage 2 选中方案中存在；
 - `plan_tags` 引用的方案是否存在。
 
-**Q：为什么 Stage 1 多段模型只用了第 1 段？**
+**Q：Stage 1 会怎么处理窗口数不一致？**
 
-Stage 1 只对“所有候选方案共同拥有”的段号建模。如果某个候选方案只有 1 段，那么第 2 段不会进入 Stage 1；它会在 Stage 2 选中该方案后生效。
+Stage 1 为每个方向建立固定数量的 band；每个 band 在每个路口自由选择候选方案中实际存在的窗口。窗口数不一致不再取“共同段号”，而是由 band 的窗口选择变量决定使用哪个窗口。
+
+**Q：Stage 2 会重新选择窗口吗？**
+
+默认不会。Stage 2 读取 Stage 1 输出的 `band_window_choices` / `local_band_window_choices` 固定窗口分配，只调节端点 `x`；band 顺序也从 Stage 1 的 `band_order_choices` 固定。
 
 **Q：`window_bands` 和 `multi_bandwidths` 有什么区别？**
 
-- `multi_bandwidths`：全走廊共享传播轨迹的带宽，按方向、段号组织；
+- `multi_bandwidths`：全走廊共享传播轨迹的带宽，按方向、band 编号组织；
 - `window_bands` / `window_band_ranges`：子走廊独立求解得到的局部最优带，可以有自己的传播时刻。
 
 **Q：为什么 `intersection_loss` 和我手算的软损失不一致？**

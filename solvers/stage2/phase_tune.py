@@ -7,11 +7,11 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 
 from ...models import Arterial, SignalConstraint, SignalLoss, SignalPlan
 from ...solution import Solution
-from ..core.base import Solver
-from ..core.band_lattice import (fill_solution_multi_window_bands,
-                                 fill_solution_window_band_ranges)
+from ..core.base import Solver, compute_effective_max_loops
+from ..core.band_lattice import (fill_solution_local_band_records,
+                                 fill_solution_missing_window_bands)
 from ..core.margin import BandMarginConfig
-from ..core.objective import BandKey, ObjectiveConfig, parse_band_key
+from ..core.objective import ObjectiveConfig, parse_band_key
 from ..builders.signal_constraints import (ConstraintBuilder, LinearSpec,
                                            SegmentLossBuilder,
                                            scale_linear_spec, window_exprs)
@@ -31,28 +31,37 @@ class FullFlexiblePhaseTuneSolver(Solver):
         self,
         config: ObjectiveConfig,
         max_loops: int = 3,
+        max_bands: int | None = None,
+        band_gap: float = 0.0,
         up_global_output: bool = True,
         down_global_output: bool = False,
         margin: BandMarginConfig | None = None,
     ) -> None:
-        """函数名：__init__；参数：config、max_loops、输出口径、边距；返回值：无；异常：无。"""
+        """函数名：__init__；参数：config、max_loops、最大 band 数、band 间隔、输出口径、边距；返回值：无；异常：无。"""
         self.config = config
         self.max_loops = max_loops
+        self.max_bands = int(max_bands) if max_bands is not None else None
+        self.band_gap = float(band_gap)
         self.up_global_output = up_global_output
         self.down_global_output = down_global_output
         self.margin = margin or BandMarginConfig()
+        if self.max_bands is not None and self.max_bands <= 0:
+            raise ValueError("max_bands 必须为正")
+        if self.band_gap < 0:
+            raise ValueError("band_gap 不能为负")
 
-    @staticmethod
-    def _available_bands(plans: list[SignalPlan]) -> list[BandInstance]:
-        """函数名：_available_bands；参数：plans；返回值：全走廊共享的带段键；异常：无。"""
+    def _band_instances_from_prior(self, prior: Solution | None) -> list[BandInstance]:
+        """从 Stage 1 结果恢复 band 编号；缺失时回退到 max_bands 或默认 1。"""
         keys: list[BandInstance] = []
         for direction in ("up", "down"):
-            max_count = min(
-                len(plan.up_segments if direction == "up" else plan.down_segments)
-                for plan in plans
-            )
-            for segment_no in range(1, max_count + 1):
-                keys.append((direction, segment_no))
+            if prior is not None and prior.multi_bandwidths.get(direction):
+                numbers = sorted(int(v) for v in prior.multi_bandwidths[direction].keys())
+            elif self.max_bands is not None:
+                numbers = list(range(1, self.max_bands + 1))
+            else:
+                numbers = [1]
+            for band_no in numbers:
+                keys.append((direction, band_no))
         return keys
 
     @staticmethod
@@ -74,17 +83,16 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 specs.add((band.direction, band.k, band.start))
         return sorted(specs)
 
-    @staticmethod
-    def _window_common_segment_numbers(plans: list[SignalPlan],
-                                       direction: str,
-                                       start: int,
-                                       k: int) -> list[int]:
-        """函数名：_window_common_segment_numbers；参数：plans、direction、start、k；返回值：段号列表；异常：无。"""
-        max_count = min(
-            len(plan.up_segments if direction == "up" else plan.down_segments)
-            for plan in plans[start:start + k]
-        )
-        return list(range(1, max_count + 1))
+    def _local_band_numbers_from_prior(self,
+                                       prior: Solution | None,
+                                       key: str,
+                                       fallback_numbers: list[int]) -> list[int]:
+        """从 Stage 1 结果恢复局部 band 编号。"""
+        if prior is not None:
+            choices = prior.local_band_window_choices.get(key)
+            if choices:
+                return sorted(int(v) for v in choices.keys())
+        return list(fallback_numbers)
 
     def solve(
         self,
@@ -107,6 +115,9 @@ class FullFlexiblePhaseTuneSolver(Solver):
             raise ValueError("FullFlexiblePhaseTuneSolver 至少需要两个路口")
         self.config.validate(n)
 
+        # self.max_loops 只是手动下限；长路段会自动放大。
+        effective_max_loops = compute_effective_max_loops(arterial, self.max_loops)
+
         int_names = [inter.name for inter in ints]
         name_to_i = {name: idx for idx, name in enumerate(int_names)}
         seg_names = [seg.name for seg in segs]
@@ -119,9 +130,9 @@ class FullFlexiblePhaseTuneSolver(Solver):
             pname = prior.plan_choices.get(inter.name) if prior and prior.plan_choices else None
             selected.append(inter.plan_by_name(pname) if pname else inter.plans[0])
 
-        band_instances = self._available_bands(selected)
+        band_instances = self._band_instances_from_prior(prior)
         if not band_instances:
-            raise ValueError("当前方案下没有可用的全走廊多段绿波带")
+            raise ValueError("当前方案下没有可用的绿波带 band")
 
         exprs = [window_exprs(plan, cycle) for plan in selected]
         tunable = [
@@ -129,9 +140,63 @@ class FullFlexiblePhaseTuneSolver(Solver):
             for name in int_names
         ]
         active_by_direction = {
-            "up": [segment_no for direction, segment_no in band_instances if direction == "up"],
-            "down": [segment_no for direction, segment_no in band_instances if direction == "down"],
+            "up": [band_no for direction, band_no in band_instances if direction == "up"],
+            "down": [band_no for direction, band_no in band_instances if direction == "down"],
         }
+
+        # ------------------------------------------------------------------
+        # 从 Stage 1 恢复固定窗口选择和顺序选择。
+        # ------------------------------------------------------------------
+        def plan_windows(plan: SignalPlan, direction: str) -> list:
+            return plan.up_segments if direction == "up" else plan.down_segments
+
+        def global_window_no(direction: str, band_no: int, i: int) -> int:
+            plan = selected[i]
+            q = 1
+            if prior is not None:
+                choice = prior.band_window_choices.get(direction, {}).get(band_no, {}).get(int_names[i])
+                if isinstance(choice, dict):
+                    try:
+                        q = int(choice.get("window", 1))
+                    except (TypeError, ValueError):
+                        q = 1
+            windows = plan_windows(plan, direction)
+            if not (1 <= q <= len(windows)):
+                q = 1
+            return q
+
+        def local_window_no(direction: str, band_no: int, key: str, i: int) -> int:
+            plan = selected[i]
+            q = 1
+            if prior is not None:
+                choice = prior.local_band_window_choices.get(key, {}).get(band_no, {}).get(int_names[i])
+                if isinstance(choice, dict):
+                    try:
+                        q = int(choice.get("window", 1))
+                    except (TypeError, ValueError):
+                        q = 1
+            windows = plan_windows(plan, direction)
+            if not (1 <= q <= len(windows)):
+                q = 1
+            return q
+
+        def global_order_value(direction: str, r: int, s: int, i: int) -> int:
+            """缺失时默认 r 在 s 前面，保证 Stage 2 仍有顺序约束。"""
+            if prior is not None:
+                try:
+                    return int(prior.band_order_choices[direction][r][s][int_names[i]])
+                except (KeyError, TypeError):
+                    pass
+            return 1
+
+        def local_order_value(key: str, r: int, s: int, i: int) -> int:
+            """缺失时默认 r 在 s 前面，保证 Stage 2 仍有顺序约束。"""
+            if prior is not None:
+                try:
+                    return int(prior.local_band_order_choices[key][r][s][int_names[i]])
+                except (KeyError, TypeError):
+                    pass
+            return 1
 
         cur = 0
         idx_terms: list[list[int]] = []
@@ -157,12 +222,14 @@ class FullFlexiblePhaseTuneSolver(Solver):
             cur += 1
 
         local_specs = self._local_objective_specs(self.config, n)
-        local_segments_by_spec: dict[tuple[str, int, int], list[int]] = {}
+        local_bands_by_spec: dict[tuple[str, int, int], list[int]] = {}
         for direction, k, start in local_specs:
-            segment_numbers = self._window_common_segment_numbers(selected, direction, start, k)
-            local_segments_by_spec[(direction, k, start)] = segment_numbers
-            for segment_no in segment_numbers:
-                local_key = (direction, segment_no, k, start)
+            key = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
+            fallback = active_by_direction.get(direction, [1])
+            band_numbers = self._local_band_numbers_from_prior(prior, key, fallback)
+            local_bands_by_spec[(direction, k, start)] = band_numbers
+            for band_no in band_numbers:
+                local_key = (direction, band_no, k, start)
                 local_t_idx[local_key] = list(range(cur, cur + k))
                 cur += k
                 local_loop_idx[local_key] = list(range(cur, cur + k - 1))
@@ -179,7 +246,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
             plan_constraints: list[SignalConstraint],
             intersection_name: str,
         ) -> list[LinearSpec]:
-            """函数名：build_prefixed_specs；参数：plan_constraints、intersection_name；返回值：LinearSpec 列表；异常：无。"""
             specs: list[LinearSpec] = []
             for item in plan_constraints:
                 specs.append(
@@ -198,36 +264,18 @@ class FullFlexiblePhaseTuneSolver(Solver):
             plan_losses: list[SignalLoss],
             intersection_name: str,
         ) -> list[LinearSpec]:
-            """函数名：build_prefixed_loss_specs；参数：plan_losses、intersection_name；返回值：LinearSpec 列表；异常：无。"""
             specs: list[LinearSpec] = []
             for item in plan_losses:
                 terms = {f"{intersection_name}.{term}": coef for term, coef in item.terms.items()}
                 if item.lower_threshold is not None:
-                    specs.append(
-                        LinearSpec(
-                            terms=terms,
-                            sense=">=",
-                            rhs=item.lower_threshold,
-                            soft=True,
-                            penalty=item.lower_slope,
-                            name=(f"{item.name}.lower" if item.name else ""),
-                        )
-                    )
+                    specs.append(LinearSpec(terms=terms, sense=">=", rhs=item.lower_threshold,
+                                            soft=True, penalty=item.lower_slope,
+                                            name=(f"{item.name}.lower" if item.name else "")))
                 if item.upper_threshold is not None:
-                    specs.append(
-                        LinearSpec(
-                            terms=terms,
-                            sense="<=",
-                            rhs=item.upper_threshold,
-                            soft=True,
-                            penalty=(
-                                item.upper_slope
-                                if item.upper_slope is not None
-                                else item.lower_slope
-                            ),
-                            name=(f"{item.name}.upper" if item.name else ""),
-                        )
-                    )
+                    specs.append(LinearSpec(terms=terms, sense="<=", rhs=item.upper_threshold,
+                                            soft=True,
+                                            penalty=(item.upper_slope if item.upper_slope is not None else item.lower_slope),
+                                            name=(f"{item.name}.upper" if item.name else "")))
             return specs
 
         band_specs: list[LinearSpec] = []
@@ -244,25 +292,14 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 else:
                     intersection_specs.append(spec)
 
-        # 统一 term 校验：Stage 2 方案已锁定，要求选中方案定义相应端点。
         validation_ctx = TermValidationContext(
             intersection_names=int_names,
             segment_names=seg_names,
-            active_directions={
-                direction for direction, nums in active_by_direction.items() if nums
-            },
-            active_segment_numbers={
-                direction: set(nums)
-                for direction, nums in active_by_direction.items()
-                if nums
-            },
+            active_directions={direction for direction, nums in active_by_direction.items() if nums},
+            active_segment_numbers={direction: set(nums) for direction, nums in active_by_direction.items() if nums},
             balance_group_count=len(self.config.balance_groups),
-            endpoint_terms_by_intersection={
-                name: set(exprs[i].term_names) for i, name in enumerate(int_names)
-            },
-            plan_names_by_intersection={
-                inter.name: {plan.name for plan in inter.plans} for inter in ints
-            },
+            endpoint_terms_by_intersection={name: set(exprs[i].term_names) for i, name in enumerate(int_names)},
+            plan_names_by_intersection={inter.name: {plan.name for plan in inter.plans} for inter in ints},
         )
         validation_ctx.validate_specs(
             [(spec, "band") for spec in band_specs]
@@ -270,32 +307,23 @@ class FullFlexiblePhaseTuneSolver(Solver):
         )
 
         def band_member_vars_text(key_text: str) -> list[int]:
-            """函数名：band_member_vars_text；参数：key_text；返回值：聚合变量列表；异常：无。"""
             band = parse_band_key(key_text, n)
             vars_out: list[int] = []
             if key_text.endswith(".global"):
-                for segment_no in active_by_direction.get(band.direction, []):
-                    vars_out.append(global_idx[(band.direction, segment_no)])
+                for band_no in active_by_direction.get(band.direction, []):
+                    vars_out.append(global_idx[(band.direction, band_no)])
                 return vars_out
-
-            for segment_no in local_segments_by_spec.get((band.direction, band.k, band.start), []):
-                key = (band.direction, segment_no, band.k, band.start)
+            for band_no in local_bands_by_spec.get((band.direction, band.k, band.start), []):
+                key = (band.direction, band_no, band.k, band.start)
                 if key in lattice_idx:
                     vars_out.append(lattice_idx[key])
             return vars_out
 
         def resolve_special_terms(name: str, coef: float) -> list[tuple[int, float]]:
-            """函数名：resolve_special_terms；参数：name、coef；返回值：[(变量下标, 系数)]；异常：无。"""
             if name == "b_up":
-                return [
-                    (global_idx[("up", segment_no)], coef)
-                    for segment_no in active_by_direction["up"]
-                ]
+                return [(global_idx[("up", band_no)], coef) for band_no in active_by_direction["up"]]
             if name == "b_down":
-                return [
-                    (global_idx[("down", segment_no)], coef)
-                    for segment_no in active_by_direction["down"]
-                ]
+                return [(global_idx[("down", band_no)], coef) for band_no in active_by_direction["down"]]
             if name == "B_bal":
                 gvar = balance_vars.get(0)
                 return [] if gvar is None else [(gvar, coef)]
@@ -303,34 +331,29 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 i = name_to_i.get(name[3:])
                 if i is None or not active_by_direction["up"]:
                     return []
-                first_segment = active_by_direction["up"][0]
-                return [(t_idx[("up", first_segment)][i], coef)]
+                first_band = active_by_direction["up"][0]
+                return [(t_idx[("up", first_band)][i], coef)]
             if name.startswith("tD_"):
                 i = name_to_i.get(name[3:])
                 if i is None or not active_by_direction["down"]:
                     return []
-                first_segment = active_by_direction["down"][0]
-                return [(t_idx[("down", first_segment)][i], coef)]
+                first_band = active_by_direction["down"][0]
+                return [(t_idx[("down", first_band)][i], coef)]
             if name.startswith("bD_"):
                 seg_idx = seg_name_to_idx.get(name[3:])
                 if seg_idx is None:
                     return []
-                return [
-                    (width_idx[("down", segment_no)][seg_idx], coef)
-                    for segment_no in active_by_direction["down"]
-                ]
+                return [(width_idx[("down", band_no)][seg_idx], coef)
+                        for band_no in active_by_direction["down"]]
             if name.startswith("bU_"):
                 seg_idx = seg_name_to_idx.get(name[3:])
                 if seg_idx is None:
                     return []
-                return [
-                    (width_idx[("up", segment_no)][seg_idx], coef)
-                    for segment_no in active_by_direction["up"]
-                ]
+                return [(width_idx[("up", band_no)][seg_idx], coef)
+                        for band_no in active_by_direction["up"]]
             return []
 
         def resolve_term_terms(name: str, coef: float) -> list[tuple[int, float]]:
-            """函数名：resolve_term_terms；参数：name、coef；返回值：[(变量下标, 系数)]；异常：无。"""
             parts = name.split(".")
             if len(parts) != 4:
                 return []
@@ -348,7 +371,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
         resolved_constraints: list[tuple[LinearSpec, list[tuple[int, float]], int | None, str]] = []
         for kind, specs in (("band", band_specs), ("intersection", intersection_specs)):
             for spec in specs:
-                # 过滤 plan_tags
                 if spec.plan_tags:
                     skip = False
                     for int_name, plan_name in spec.plan_tags.items():
@@ -376,9 +398,6 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     cur += 1
                 resolved_constraints.append((scaled_spec, terms, slack, kind))
 
-        # ------------------------------------------------------------------
-        # 边距参数（ratio -> 秒）
-        # ------------------------------------------------------------------
         hard_margin_up = self.margin.hard_margin_up * cycle
         hard_margin_down = self.margin.hard_margin_down * cycle
         soft_margin_up = self.margin.soft_margin_up * cycle
@@ -386,21 +405,17 @@ class FullFlexiblePhaseTuneSolver(Solver):
         penalty_up = self.margin.penalty_up
         penalty_down = self.margin.penalty_down
 
-        # 软边距记录：每条记录包含一个 slack 变量、margin 表达式系数、
-        # 软边距阈值（秒）和惩罚系数。
         margin_records: list[dict[str, object]] = []
         if self.margin.has_soft_margin:
-            # 1) 全局带实例：每个路口一个起点边距；每条边的两个端点各一个终点边距。
-            for direction, segment_no in band_instances:
-                key = (direction, segment_no)
+            for direction, band_no in band_instances:
+                key = (direction, band_no)
                 soft_margin = soft_margin_up if direction == "up" else soft_margin_down
                 penalty = penalty_up if direction == "up" else penalty_down
                 if soft_margin <= 0.0 or penalty <= 0.0:
                     continue
-
-                start_name = f"{direction}.{segment_no}.start"
-                end_name = f"{direction}.{segment_no}.end"
                 for i, expr in enumerate(exprs):
+                    q = global_window_no(direction, band_no, i)
+                    start_name = f"{direction}.{q}.start"
                     start_var = idx_terms[i][expr.term_names.index(start_name)]
                     slack = cur
                     cur += 1
@@ -412,6 +427,8 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     })
                 for e in range(m):
                     for i in (e, e + 1):
+                        q = global_window_no(direction, band_no, i)
+                        end_name = f"{direction}.{q}.end"
                         end_var = idx_terms[i][exprs[i].term_names.index(end_name)]
                         slack = cur
                         cur += 1
@@ -426,36 +443,35 @@ class FullFlexiblePhaseTuneSolver(Solver):
                             "penalty": penalty,
                         })
 
-            # 2) 局部窗口带实例：每个参与路口各一个起点/终点边距。
-            for local_key, band_var in lattice_idx.items():
-                direction, segment_no, k, start = local_key
+            for (direction, k, start), band_numbers in local_bands_by_spec.items():
+                key = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
                 soft_margin = soft_margin_up if direction == "up" else soft_margin_down
                 penalty = penalty_up if direction == "up" else penalty_down
                 if soft_margin <= 0.0 or penalty <= 0.0:
                     continue
-
-                start_name = f"{direction}.{segment_no}.start"
-                end_name = f"{direction}.{segment_no}.end"
-                t_vars = local_t_idx[local_key]
-                for offset, abs_idx in enumerate(range(start, start + k)):
-                    start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(start_name)]
-                    end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(end_name)]
-                    slack = cur
-                    cur += 1
-                    margin_records.append({
-                        "slack": slack,
-                        "terms": {t_vars[offset]: 1.0, start_var: -1.0},
-                        "rhs": soft_margin,
-                        "penalty": penalty,
-                    })
-                    slack = cur
-                    cur += 1
-                    margin_records.append({
-                        "slack": slack,
-                        "terms": {end_var: 1.0, t_vars[offset]: -1.0, band_var: -1.0},
-                        "rhs": soft_margin,
-                        "penalty": penalty,
-                    })
+                for band_no in band_numbers:
+                    t_vars = local_t_idx[(direction, band_no, k, start)]
+                    band_var = lattice_idx[(direction, band_no, k, start)]
+                    for offset, abs_idx in enumerate(range(start, start + k)):
+                        q = local_window_no(direction, band_no, key, abs_idx)
+                        start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(f"{direction}.{q}.start")]
+                        end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(f"{direction}.{q}.end")]
+                        slack = cur
+                        cur += 1
+                        margin_records.append({
+                            "slack": slack,
+                            "terms": {t_vars[offset]: 1.0, start_var: -1.0},
+                            "rhs": soft_margin,
+                            "penalty": penalty,
+                        })
+                        slack = cur
+                        cur += 1
+                        margin_records.append({
+                            "slack": slack,
+                            "terms": {end_var: 1.0, t_vars[offset]: -1.0, band_var: -1.0},
+                            "rhs": soft_margin,
+                            "penalty": penalty,
+                        })
 
         nvar = cur
         effective_max_intersection = (
@@ -511,15 +527,15 @@ class FullFlexiblePhaseTuneSolver(Solver):
 
         for key in band_instances:
             ub[t_idx[key]] = cycle
-            lb[loop_idx[key]] = -self.max_loops
-            ub[loop_idx[key]] = self.max_loops
+            lb[loop_idx[key]] = -effective_max_loops
+            ub[loop_idx[key]] = effective_max_loops
             ub[width_idx[key]] = cycle
             ub[global_idx[key]] = cycle
             integrality[loop_idx[key]] = 1
         for local_key, band_var in lattice_idx.items():
             ub[local_t_idx[local_key]] = cycle
-            lb[local_loop_idx[local_key]] = -self.max_loops
-            ub[local_loop_idx[local_key]] = self.max_loops
+            lb[local_loop_idx[local_key]] = -effective_max_loops
+            ub[local_loop_idx[local_key]] = effective_max_loops
             ub[band_var] = cycle
             integrality[local_loop_idx[local_key]] = 1
         for gvar in balance_vars.values():
@@ -535,13 +551,20 @@ class FullFlexiblePhaseTuneSolver(Solver):
         hi_list: list[float] = []
 
         def add_row(coefs: dict[int, float], lower: float, upper: float) -> None:
-            """函数名：add_row；参数：coefs、lower、upper；返回值：无；异常：无。"""
             row = np.zeros(nvar)
             for j, value in coefs.items():
                 row[j] += value
             rows.append(row)
             lo_list.append(lower)
             hi_list.append(upper)
+
+        def incident_edge_indices(intersection_idx: int) -> list[int]:
+            edges: list[int] = []
+            if intersection_idx > 0:
+                edges.append(intersection_idx - 1)
+            if intersection_idx < m:
+                edges.append(intersection_idx)
+            return edges
 
         for i, expr in enumerate(exprs):
             for direction in ("up", "down"):
@@ -586,88 +609,111 @@ class FullFlexiblePhaseTuneSolver(Solver):
                     loss_row[slack] = loss_row.get(slack, 0.0) + spec.penalty
             add_row(loss_row, -np.inf, effective_max_intersection)
 
-        for direction, segment_no in band_instances:
-            key = (direction, segment_no)
+        # ---------------- 全局 band：固定 Stage 1 窗口，只调端点 ----------------
+        for direction, band_no in band_instances:
+            key = (direction, band_no)
             margin_s = hard_margin_up if direction == "up" else hard_margin_down
-            if direction == "up":
-                start_name = f"up.{segment_no}.start"
-                end_name = f"up.{segment_no}.end"
-            else:
-                start_name = f"down.{segment_no}.start"
-                end_name = f"down.{segment_no}.end"
-
-            for i, seg in enumerate(segs):
+            for e, seg in enumerate(segs):
                 if direction == "up":
                     add_row(
-                        {t_idx[key][i + 1]: 1.0, t_idx[key][i]: -1.0, loop_idx[key][i]: -cycle},
+                        {t_idx[key][e + 1]: 1.0, t_idx[key][e]: -1.0, loop_idx[key][e]: -cycle},
                         seg.travel_time_up,
                         seg.travel_time_up,
                     )
                 else:
                     add_row(
-                        {t_idx[key][i]: 1.0, t_idx[key][i + 1]: -1.0, loop_idx[key][i]: -cycle},
+                        {t_idx[key][e]: 1.0, t_idx[key][e + 1]: -1.0, loop_idx[key][e]: -cycle},
                         seg.travel_time_down,
                         seg.travel_time_down,
                     )
 
-            for i, expr in enumerate(exprs):
-                start_var = idx_terms[i][expr.term_names.index(start_name)]
+            for i in range(n):
+                q = global_window_no(direction, band_no, i)
+                start_var = idx_terms[i][exprs[i].term_names.index(f"{direction}.{q}.start")]
                 add_row({t_idx[key][i]: 1.0, start_var: -1.0}, margin_s, np.inf)
 
             for e in range(m):
-                left_end_var = idx_terms[e][exprs[e].term_names.index(end_name)]
-                right_end_var = idx_terms[e + 1][exprs[e + 1].term_names.index(end_name)]
-                add_row(
-                    {t_idx[key][e]: 1.0, width_idx[key][e]: 1.0, left_end_var: -1.0},
-                    -np.inf,
-                    -margin_s,
-                )
-                add_row(
-                    {t_idx[key][e + 1]: 1.0, width_idx[key][e]: 1.0, right_end_var: -1.0},
-                    -np.inf,
-                    -margin_s,
-                )
-                add_row(
-                    {global_idx[key]: 1.0, width_idx[key][e]: -1.0},
-                    -np.inf,
-                    0.0,
-                )
+                for i in (e, e + 1):
+                    q = global_window_no(direction, band_no, i)
+                    end_var = idx_terms[i][exprs[i].term_names.index(f"{direction}.{q}.end")]
+                    add_row(
+                        {t_idx[key][i]: 1.0, width_idx[key][e]: 1.0, end_var: -1.0},
+                        -np.inf,
+                        -margin_s,
+                    )
+                add_row({global_idx[key]: 1.0, width_idx[key][e]: -1.0}, -np.inf, 0.0)
 
-        for local_key, band_var in lattice_idx.items():
-            direction, segment_no, k, start = local_key
+        # 固定 Stage 1 的顺序，不再引入 big-M 窗口选择。
+        for direction in ("up", "down"):
+            nums = active_by_direction[direction]
+            for a in range(len(nums)):
+                for b in range(a + 1, len(nums)):
+                    r, s = nums[a], nums[b]
+                    for i in range(n):
+                        order = global_order_value(direction, r, s, i)
+                        for e in incident_edge_indices(i):
+                            if order == 1:
+                                add_row(
+                                    {t_idx[(direction, r)][i]: 1.0,
+                                     width_idx[(direction, r)][e]: 1.0,
+                                     t_idx[(direction, s)][i]: -1.0},
+                                    -np.inf,
+                                    -self.band_gap,
+                                )
+                            else:
+                                add_row(
+                                    {t_idx[(direction, s)][i]: 1.0,
+                                     width_idx[(direction, s)][e]: 1.0,
+                                     t_idx[(direction, r)][i]: -1.0},
+                                    -np.inf,
+                                    -self.band_gap,
+                                )
+
+        # ---------------- 局部/segment band：固定 Stage 1 窗口，只调端点 ----------------
+        for (direction, k, start), band_numbers in local_bands_by_spec.items():
+            key_text = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
             margin_s = hard_margin_up if direction == "up" else hard_margin_down
-            t_vars = local_t_idx[local_key]
-            loop_vars = local_loop_idx[local_key]
             local_segs = segs[start:start + k - 1]
+            for band_no in band_numbers:
+                local_key = (direction, band_no, k, start)
+                t_vars = local_t_idx[local_key]
+                loop_vars = local_loop_idx[local_key]
+                band_var = lattice_idx[local_key]
+                for offset, seg in enumerate(local_segs):
+                    if direction == "up":
+                        add_row(
+                            {t_vars[offset + 1]: 1.0, t_vars[offset]: -1.0, loop_vars[offset]: -cycle},
+                            seg.travel_time_up,
+                            seg.travel_time_up,
+                        )
+                    else:
+                        add_row(
+                            {t_vars[offset]: 1.0, t_vars[offset + 1]: -1.0, loop_vars[offset]: -cycle},
+                            seg.travel_time_down,
+                            seg.travel_time_down,
+                        )
 
-            if direction == "up":
-                start_name = f"up.{segment_no}.start"
-                end_name = f"up.{segment_no}.end"
-            else:
-                start_name = f"down.{segment_no}.start"
-                end_name = f"down.{segment_no}.end"
+                for offset, abs_idx in enumerate(range(start, start + k)):
+                    q = local_window_no(direction, band_no, key_text, abs_idx)
+                    start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(f"{direction}.{q}.start")]
+                    end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(f"{direction}.{q}.end")]
+                    add_row({t_vars[offset]: 1.0, start_var: -1.0}, margin_s, np.inf)
+                    add_row({t_vars[offset]: 1.0, band_var: 1.0, end_var: -1.0}, -np.inf, -margin_s)
 
-            for offset, seg in enumerate(local_segs):
-                if direction == "up":
-                    add_row(
-                        {t_vars[offset + 1]: 1.0, t_vars[offset]: -1.0, loop_vars[offset]: -cycle},
-                        seg.travel_time_up,
-                        seg.travel_time_up,
-                    )
-                else:
-                    add_row(
-                        {t_vars[offset]: 1.0, t_vars[offset + 1]: -1.0, loop_vars[offset]: -cycle},
-                        seg.travel_time_down,
-                        seg.travel_time_down,
-                    )
+            for a in range(len(band_numbers)):
+                for b in range(a + 1, len(band_numbers)):
+                    r, s = band_numbers[a], band_numbers[b]
+                    for offset, abs_idx in enumerate(range(start, start + k)):
+                        order = local_order_value(key_text, r, s, abs_idx)
+                        t_r = local_t_idx[(direction, r, k, start)][offset]
+                        t_s = local_t_idx[(direction, s, k, start)][offset]
+                        b_r = lattice_idx[(direction, r, k, start)]
+                        b_s = lattice_idx[(direction, s, k, start)]
+                        if order == 1:
+                            add_row({t_r: 1.0, b_r: 1.0, t_s: -1.0}, -np.inf, -self.band_gap)
+                        else:
+                            add_row({t_s: 1.0, b_s: 1.0, t_r: -1.0}, -np.inf, -self.band_gap)
 
-            for offset, abs_idx in enumerate(range(start, start + k)):
-                start_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(start_name)]
-                end_var = idx_terms[abs_idx][exprs[abs_idx].term_names.index(end_name)]
-                add_row({t_vars[offset]: 1.0, start_var: -1.0}, margin_s, np.inf)
-                add_row({t_vars[offset]: 1.0, band_var: 1.0, end_var: -1.0}, -np.inf, -margin_s)
-
-        # 软边距约束：slack + expr >= soft_margin
         for record in margin_records:
             add_row({**record["terms"], record["slack"]: 1.0}, record["rhs"], np.inf)
 
@@ -706,6 +752,63 @@ class FullFlexiblePhaseTuneSolver(Solver):
             }
             for i, expr in enumerate(exprs)
         }
+
+        # 输出时保留 Stage 1 的窗口/顺序选择；若 prior 缺失则按固定回退选择重建。
+        sol.band_window_choices = {"up": {}, "down": {}}
+        sol.band_order_choices = {"up": {}, "down": {}}
+        for direction, band_no in band_instances:
+            sol.band_window_choices[direction][band_no] = {}
+            for i in range(n):
+                q = global_window_no(direction, band_no, i)
+                sol.band_window_choices[direction][band_no][int_names[i]] = {
+                    "plan": selected[i].name,
+                    "window": q,
+                }
+        for direction in ("up", "down"):
+            nums = active_by_direction[direction]
+            sol.band_order_choices[direction] = {}
+            for a in range(len(nums)):
+                for b in range(a + 1, len(nums)):
+                    r, s = nums[a], nums[b]
+                    sol.band_order_choices[direction][r] = sol.band_order_choices[direction].get(r, {})
+                    sol.band_order_choices[direction][r][s] = {}
+                    for i in range(n):
+                        order = global_order_value(direction, r, s, i)
+                        sol.band_order_choices[direction][r][s][int_names[i]] = order
+
+        sol.local_band_window_choices = {}
+        sol.local_band_order_choices = {}
+        local_records = []
+        for (direction, k, start), band_numbers in local_bands_by_spec.items():
+            key_text = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
+            sol.local_band_window_choices.setdefault(key_text, {})
+            sol.local_band_order_choices.setdefault(key_text, {})
+            for band_no in band_numbers:
+                choices: dict[str, dict[str, object]] = {}
+                raw_times: list[float] = []
+                for offset, abs_idx in enumerate(range(start, start + k)):
+                    q = local_window_no(direction, band_no, key_text, abs_idx)
+                    choices[int_names[abs_idx]] = {"plan": selected[abs_idx].name, "window": q}
+                    raw_times.append(float(x[local_t_idx[(direction, band_no, k, start)][offset]]))
+                sol.local_band_window_choices[key_text][band_no] = choices
+                local_records.append({
+                    "direction": direction,
+                    "band_no": band_no,
+                    "key": key_text,
+                    "start": start,
+                    "k": k,
+                    "bandwidth": float(x[lattice_idx[(direction, band_no, k, start)]]),
+                    "times": raw_times,
+                    "window_choices": choices,
+                })
+            for a in range(len(band_numbers)):
+                for b in range(a + 1, len(band_numbers)):
+                    r, s = band_numbers[a], band_numbers[b]
+                    sol.local_band_order_choices[key_text].setdefault(r, {})[s] = {}
+                    for offset, abs_idx in enumerate(range(start, start + k)):
+                        order = local_order_value(key_text, r, s, abs_idx)
+                        sol.local_band_order_choices[key_text][r][s][int_names[abs_idx]] = order
+
         sol.multi_bandwidths = {"up": {}, "down": {}}
         sol.multi_band_starts = {"up": {}, "down": {}}
         sol.multi_window_bands = {"up": {}, "down": {}}
@@ -714,12 +817,12 @@ class FullFlexiblePhaseTuneSolver(Solver):
             "up": {seg_name: 0.0 for seg_name in seg_names},
             "down": {seg_name: 0.0 for seg_name in seg_names},
         }
-        for direction, segment_no in band_instances:
-            key = (direction, segment_no)
+        for direction, band_no in band_instances:
+            key = (direction, band_no)
             edge_widths = [float(x[index]) for index in width_idx[key]]
             global_width = float(x[global_idx[key]])
-            sol.multi_bandwidths[direction][segment_no] = global_width
-            sol.multi_band_starts[direction][segment_no] = {
+            sol.multi_bandwidths[direction][band_no] = global_width
+            sol.multi_band_starts[direction][band_no] = {
                 int_names[i]: float(x[t_idx[key][i]])
                 for i in range(n)
             }
@@ -738,20 +841,22 @@ class FullFlexiblePhaseTuneSolver(Solver):
             sol.bandwidth_down = dict(aggregated_edge_widths["down"])
 
         if active_by_direction["up"]:
-            first = active_by_direction["up"][0]
+            first_band = active_by_direction["up"][0]
             sol.band_start_up = {
-                int_names[i]: float(x[t_idx[("up", first)][i]])
+                int_names[i]: float(x[t_idx[("up", first_band)][i]])
                 for i in range(n)
             }
         if active_by_direction["down"]:
-            first = active_by_direction["down"][0]
+            first_band = active_by_direction["down"][0]
             sol.band_start_down = {
-                int_names[i]: float(x[t_idx[("down", first)][i]])
+                int_names[i]: float(x[t_idx[("down", first_band)][i]])
                 for i in range(n)
             }
 
-        fill_solution_multi_window_bands(sol, arterial, max_loops=self.max_loops, margin=self.margin)
-        fill_solution_window_band_ranges(sol, arterial)
+        fill_solution_local_band_records(sol, arterial, local_records, clear=True)
+        fill_solution_missing_window_bands(
+            sol, arterial, max_window=5, max_loops=effective_max_loops, margin=self.margin
+        )
 
         band_loss = 0.0
         intersection_loss = 0.0
@@ -770,9 +875,7 @@ class FullFlexiblePhaseTuneSolver(Solver):
                 intersection_loss += weighted
 
         for record in margin_records:
-            expr_value = sum(
-                coef * float(x[var]) for var, coef in record["terms"].items()
-            )
+            expr_value = sum(coef * float(x[var]) for var, coef in record["terms"].items())
             violation = max(0.0, float(record["rhs"]) - expr_value)
             band_loss += float(record["penalty"]) * violation
 

@@ -9,6 +9,7 @@
 - 如何给方案配置第二阶段可调范围 `metadata["term_bounds"]`；
 - 如何配置硬/软边距 `BandMarginConfig`；
 - 如何在 Stage 1 之后继续运行 Stage 2，查看 term_bounds 带来的端点微调；
+- 如何运行迭代两阶段 `IterativeTwoStageSolver`，直到窗口分配稳定；
 - 如何把该结果直接导出为 JSON，供绘图或外部系统消费。
 """
 
@@ -30,6 +31,9 @@ from artery_milp import plot_time_space
 from artery_milp.models import (Arterial, GreenWindow, Intersection, Segment,
                                 SignalConstraint, SignalLoss, SignalPlan)
 from artery_milp.solvers.core import BandMarginConfig, ObjectiveConfig, SumGroup
+from artery_milp.solvers.pipeline import (BandObjectiveConfig,
+                                          IterativeTwoStageSolver,
+                                          TwoStageConfig)
 from artery_milp.solvers.stage1 import SegmentedBandSolver
 from artery_milp.solvers.stage2 import FullFlexiblePhaseTuneSolver
 
@@ -247,6 +251,13 @@ def main() -> None:
         json.dumps(tuned.to_dict(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    tuned_image_path = output_dir / "window_band_ranges_case_stage2_time_space.png"
+    plot_time_space(
+        arterial,
+        tuned,
+        save_path=str(tuned_image_path),
+        notes=["Stage 2: term_bounds tuned endpoints"],
+    )
 
     print("-" * 80)
     print("Stage 2 端点微调（term_bounds 生效）")
@@ -277,6 +288,60 @@ def main() -> None:
         f"intersection_loss={tuned.intersection_loss:.3f}"
     )
     print(f"Stage 2 JSON 已保存到 {tuned_json_path}")
+    print(f"Stage 2 时空图已保存到 {tuned_image_path}")
+
+    # ------------------------------------------------------------------
+    # 迭代两阶段：不断把 Stage 2 调好的窗口写回 Stage 1，直到窗口分配稳定。
+    # ------------------------------------------------------------------
+    iterative_config = TwoStageConfig(
+        band=BandObjectiveConfig(
+            mode="global",
+            objective=build_objective(),
+            band_loss_weight=0.5,
+        ),
+        margin=margin,
+        max_loops=3,
+    )
+    iterative_solver = IterativeTwoStageSolver(
+        config=iterative_config,
+        max_iterations=10,
+    )
+    iterative = iterative_solver.solve(arterial)
+    if not iterative.status.startswith("optimal"):
+        raise RuntimeError(f"unexpected iterative status: {iterative.status}")
+
+    iterative_json_path = output_dir / "window_band_ranges_case_iterative_output.json"
+    iterative_json_path.write_text(
+        json.dumps(iterative.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    iterative_image_path = output_dir / "window_band_ranges_case_iterative_time_space.png"
+    plot_time_space(
+        arterial,
+        iterative,
+        save_path=str(iterative_image_path),
+        notes=["Iterative two-stage: stable window assignment"],
+    )
+
+    print("-" * 80)
+    print("迭代两阶段求解（IterativeTwoStageSolver）")
+    print(f"最终状态: {iterative.status}")
+    print(f"迭代轮数: {len(iterative_solver.history)}")
+    print(f"选中的方案: {iterative.plan_choices}")
+    print(
+        f"  band_objective={iterative.band_objective:.3f}, "
+        f"band_loss={iterative.band_loss:.3f}, "
+        f"band_score={iterative.band_score:.3f}, "
+        f"intersection_loss={iterative.intersection_loss:.3f}"
+    )
+    print("每轮 band_score / plan_choices:")
+    for idx, item in enumerate(iterative_solver.history, start=1):
+        print(
+            f"  第 {idx} 轮: band_score={item.band_score:.3f}, "
+            f"plan_choices={item.plan_choices}"
+        )
+    print(f"迭代 JSON 已保存到 {iterative_json_path}")
+    print(f"迭代时空图已保存到 {iterative_image_path}")
 
 
 if __name__ == "__main__":

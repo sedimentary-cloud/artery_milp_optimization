@@ -18,7 +18,8 @@ from .core import (BalanceGroup, BandKey, BandMarginConfig,
                    build_objective_config, composite_config,
                    oneway_config, parse_band_key)
 from .pipeline import (BandObjectiveConfig, EpsilonConstraintRunner,
-                       IntersectionLossConfig, TwoStageConfig, TwoStageSolver)
+                       IntersectionLossConfig, IterativeTwoStageSolver,
+                       TwoStageConfig, TwoStageSolver)
 from .stage1 import SegmentedBandSolver
 from .stage2 import FullFlexiblePhaseTuneSolver
 
@@ -47,5 +48,6 @@ __all__ = [
     "IntersectionLossConfig",
     "TwoStageConfig",
     "TwoStageSolver",
+    "IterativeTwoStageSolver",
     "EpsilonConstraintRunner",
 ]

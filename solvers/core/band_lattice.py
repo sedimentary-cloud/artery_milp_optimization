@@ -344,6 +344,162 @@ def fill_solution_local_window_band_data(solution,
         solution.window_bands.update(aggregated)
 
 
+def fill_solution_local_band_records(solution,
+                                     arterial,
+                                     records: list[dict[str, object]],
+                                     clear: bool = True) -> None:
+    """根据主 MILP 的局部带变量直接回填窗口带结果。
+
+    ``records`` 中每个元素包含：
+
+    - direction: "up" / "down"
+    - band_no: 局部 band 编号
+    - key: 形如 "down.win3@I2-I4" 的窗口 key
+    - start / k: 子走廊起点下标和路口数量
+    - bandwidth: 该局部 band 的带宽（秒）
+    - times: 子走廊各路口原始（mod cycle）到达时刻
+    - window_choices: 路口名 -> {"plan": ..., "window": ...}
+    """
+    int_names = [v.name for v in arterial.intersection_order]
+    segs = arterial.segment_order
+    cycle = arterial.cycle
+
+    if clear:
+        solution.multi_window_bands = {"up": {}, "down": {}}
+        solution.window_bands.clear()
+        solution.window_band_ranges.clear()
+
+    aggregated: dict[str, float] = {}
+    for record in records:
+        direction = str(record["direction"])
+        band_no = int(record["band_no"])
+        key = str(record["key"])
+        start = int(record["start"])
+        k = int(record["k"])
+        bandwidth = float(record["bandwidth"])
+        raw_times = [float(v) for v in record["times"]]  # type: ignore[arg-type]
+        local_segs = segs[start:start + k - 1]
+        t_series = unwrap_band_times(direction, raw_times, local_segs, cycle)
+        used_names = int_names[start:start + k]
+
+        solution.multi_window_bands.setdefault(direction, {}).setdefault(band_no, {})[key] = bandwidth
+        aggregated[key] = aggregated.get(key, 0.0) + bandwidth
+
+        if bandwidth <= 0 or len(used_names) != k:
+            continue
+
+        time_values: list[float] = []
+        intersection_ranges: dict[str, dict[str, float]] = {}
+        for idx, iname in enumerate(used_names):
+            front = float(t_series[idx])
+            tail = front + bandwidth
+            intersection_ranges[iname] = {"start": front, "end": tail}
+            time_values.extend([front, tail])
+
+        entry = {
+            "direction": direction,
+            "band_no": band_no,
+            "segment_no": None,
+            "bandwidth": bandwidth,
+            "intersections": used_names,
+            "time_min": min(time_values),
+            "time_max": max(time_values),
+            "intersection_ranges": intersection_ranges,
+            "window_choices": dict(record.get("window_choices", {})),
+        }
+        solution.window_band_ranges.setdefault(key, []).append(entry)
+
+    if aggregated:
+        solution.window_bands.update(aggregated)
+
+
+def fill_solution_missing_window_bands(solution,
+                                       arterial,
+                                       max_window: int = 5,
+                                       max_loops: int = 3,
+                                       margin=None) -> None:
+    """为所有方向、所有窗口长度补齐局部窗口带。
+
+    主 MILP 只对 ObjectiveConfig 中显式出现的局部带建模；本函数使用
+    当前选中的方案/端点，对尚未填充的 ``(direction, k, start)`` 组合做
+    独立后处理，使 ``window_bands`` / ``window_band_ranges`` /
+    ``multi_window_bands`` 像旧版一样包含完整的方向-长度集合。
+
+    已有 key（通常是主 MILP 的自由窗口结果）不会被覆盖。
+    """
+    int_names = [v.name for v in arterial.intersection_order]
+    n = len(int_names)
+    segs = arterial.segment_order
+    cycle = arterial.cycle
+    window_sets = _selected_segment_window_sets(solution, arterial, margin=margin)
+
+    existing_keys = set(solution.window_band_ranges.keys())
+    added: dict[str, float] = {}
+
+    for direction in ("up", "down"):
+        for k in range(2, min(max_window, n) + 1):
+            for start in range(0, n - k + 1):
+                key = f"{direction}.win{k}@{int_names[start]}-{int_names[start + k - 1]}"
+                if key in existing_keys:
+                    continue
+
+                segment_numbers = _available_segment_numbers(
+                    window_sets, int_names, direction, start, k
+                )
+                for segment_no in segment_numbers:
+                    solved = _solve_independent_window_band(
+                        direction=direction,
+                        segment_no=segment_no,
+                        start=start,
+                        k=k,
+                        int_names=int_names,
+                        window_sets=window_sets,
+                        segs=segs,
+                        cycle=cycle,
+                        max_loops=max_loops,
+                    )
+                    if solved is None:
+                        continue
+
+                    bandwidth, t_series = solved
+                    solution.multi_window_bands.setdefault(direction, {}).setdefault(
+                        segment_no, {}
+                    )[key] = float(bandwidth)
+                    added[key] = added.get(key, 0.0) + float(bandwidth)
+
+                    if bandwidth <= 0:
+                        continue
+
+                    used_names = int_names[start:start + k]
+                    entry = {
+                        "direction": direction,
+                        "band_no": segment_no,
+                        "segment_no": segment_no,
+                        "bandwidth": float(bandwidth),
+                        "intersections": used_names,
+                        "time_min": min(t_series) if t_series else 0.0,
+                        "time_max": max((t + bandwidth) for t in t_series) if t_series else 0.0,
+                        "intersection_ranges": {
+                            name: {
+                                "start": float(t_series[idx]),
+                                "end": float(t_series[idx] + bandwidth),
+                            }
+                            for idx, name in enumerate(used_names)
+                        },
+                        "window_choices": {
+                            name: {
+                                "plan": solution.plan_choices.get(name, ""),
+                                "window": int(segment_no),
+                            }
+                            for name in used_names
+                        },
+                    }
+                    solution.window_band_ranges.setdefault(key, []).append(entry)
+
+    for key, bandwidth in added.items():
+        solution.window_bands[key] = solution.window_bands.get(key, 0.0) + float(bandwidth)
+
+
 def fill_solution_window_band_ranges(solution,
                                      arterial,
                                      clear: bool = True) -> None:
@@ -431,6 +587,8 @@ def fill_solution_multi_window_bands(solution,
 
 
 __all__ = [
+    "fill_solution_local_band_records",
+    "fill_solution_missing_window_bands",
     "fill_solution_local_window_band_data",
     "fill_solution_window_band_ranges",
     "fill_solution_multi_window_bands",

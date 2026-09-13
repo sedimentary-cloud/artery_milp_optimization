@@ -10,9 +10,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from artery_milp.solvers.core import (BalanceGroup, ObjectiveConfig, SumGroup,
-                                      build_objective_config,
-                                      composite_config, oneway_config)
+from artery_milp.solvers.core import (ObjectiveConfig, SumGroup,
+                                      build_objective_config)
 
 
 class BuildObjectiveConfigTests(unittest.TestCase):

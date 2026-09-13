@@ -23,6 +23,21 @@ class Solution:
     # 示例: {"I1": "baseline", "I2": "split_priority"}
     plan_choices: dict[str, str] = field(default_factory=dict)
 
+    # 全局绿波带的自由窗口选择：方向 -> band_no -> 路口名 -> 选择信息。
+    # 示例: {"up": {1: {"I1": {"plan": "p1", "window": 1}}}}
+    band_window_choices: dict[str, dict[int, dict[str, dict[str, object]]]] = field(default_factory=dict)
+
+    # 同方向全局 band 的先后顺序：方向 -> r -> s -> 路口名 -> 1/0。
+    # 1 表示 r 在 s 前面；0 表示 s 在 r 前面。
+    band_order_choices: dict[str, dict[int, dict[int, dict[str, int]]]] = field(default_factory=dict)
+
+    # 局部/segment 绿波带的自由窗口选择：窗口 key -> band_no -> 路口名 -> 选择信息。
+    # 示例: {"down.win3@I2-I4": {1: {"I2": {"plan": "p1", "window": 1}}}}
+    local_band_window_choices: dict[str, dict[int, dict[str, dict[str, object]]]] = field(default_factory=dict)
+
+    # 局部/segment 绿波带同方向 band 的先后顺序：窗口 key -> r -> s -> 路口名 -> 1/0。
+    local_band_order_choices: dict[str, dict[int, dict[int, dict[str, int]]]] = field(default_factory=dict)
+
     # 上行带宽摘要：物理路段名 -> 带宽（秒）。
     # 口径由 solver 的 up_global_output 决定。
     # 示例: {"S12": 8.03, "S23": 10.99}
@@ -32,12 +47,13 @@ class Solution:
     # 示例: {"S12": 0.0, "S23": 0.0}
     bandwidth_down: dict[str, float] = field(default_factory=dict)
 
-    # 上行代表带在各路口的到达时刻（秒，mod cycle）。
-    # 当前取第一个活跃段号的轨迹。
+    # 兼容摘要：上行第一条 band 在各路口的到达时刻（秒，mod cycle）。
+    # 新代码应优先使用 multi_band_starts["up"][band_no]；此字段只用于
+    # 旧绘图回退，可由 multi_band_starts 推导。
     # 示例: {"I1": 4.5, "I2": 18.07, "I3": 32.71}
     band_start_up: dict[str, float] = field(default_factory=dict)
 
-    # 下行代表带在各路口的到达时刻（秒，mod cycle）。
+    # 兼容摘要：下行第一条 band 在各路口的到达时刻（秒，mod cycle）。
     # 示例: {"I1": 68.4, "I2": 54.97, "I3": 40.69}
     band_start_down: dict[str, float] = field(default_factory=dict)
 
@@ -74,15 +90,16 @@ class Solution:
     # 示例: {"I2": {"up.1.start": 9.0, "up.1.end": 26.1, ...}}
     segment_times: dict[str, dict[str, float]] = field(default_factory=dict)
 
-    # 全局多段带：方向 -> 段号(1-based) -> 全走廊带宽（秒）。
+    # 全局多带：方向 -> band 编号(1-based) -> 全走廊带宽（秒）。
     # 示例: {"up": {1: 14.0, 2: 8.5}, "down": {1: 12.0}}
     multi_bandwidths: dict[str, dict[int, float]] = field(default_factory=dict)
 
-    # 全局多段带轨迹：方向 -> 段号(1-based) -> 路口名 -> 到达时刻（秒，mod cycle）。
+    # 全局多带轨迹：方向 -> band 编号(1-based) -> 路口名 -> 到达时刻（秒，mod cycle）。
     # 示例: {"up": {1: {"I1": 4.5, "I2": 18.07, "I3": 32.71}}}
     multi_band_starts: dict[str, dict[int, dict[str, float]]] = field(default_factory=dict)
 
-    # 局部窗口带按段号拆分：方向 -> 段号(1-based) -> 窗口 key -> 带宽（秒）。
+    # 局部窗口带：方向 -> band/segment 编号(1-based) -> 窗口 key -> 带宽（秒）。
+    # 主 MILP 结果使用 band 编号；自动补齐的兼容后处理使用 segment 编号。
     # 示例: {"down": {1: {"down.win3@I2-I4": 13.36}}}
     multi_window_bands: dict[str, dict[int, dict[str, float]]] = field(default_factory=dict)
 
@@ -124,6 +141,10 @@ class Solution:
         return {
             "cycle": self.cycle,
             "plan_choices": self.plan_choices,
+            "band_window_choices": self.band_window_choices,
+            "band_order_choices": self.band_order_choices,
+            "local_band_window_choices": self.local_band_window_choices,
+            "local_band_order_choices": self.local_band_order_choices,
             "bandwidth_up": self.bandwidth_up,
             "bandwidth_down": self.bandwidth_down,
             "band_start_up": self.band_start_up,
